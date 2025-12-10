@@ -3,17 +3,39 @@ import { useAgentStore, Task } from '../store/agentStore';
 import { motion } from 'framer-motion';
 import { Users, Activity, Code, Bug, Layout, Terminal, CheckCircle, Clock, X, FileText, Folder, FolderOpen } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import { selectDirectory } from '../utils/fileSystem';
+import { selectDirectory, createDirectory, getDocumentsPath } from '../utils/fileSystem';
 
 const DashboardView = () => {
-    const { agents, tasks, toggleTaskSelection, toggleCategorySelection, rootPath, setProjectRoot } = useAgentStore();
+    const { agents, tasks, toggleTaskSelection, toggleCategorySelection, rootPath, setProjectRoot, activeProjectId, projects } = useAgentStore();
     const location = useLocation();
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
     const handleSelectDirectory = async () => {
-        const path = await selectDirectory();
-        if (path) {
-            setProjectRoot(path);
+        try {
+            const activeProject = projects.find(p => p.id === activeProjectId);
+            const rawName = activeProject ? activeProject.name : 'Untitled-Project';
+            const safeName = rawName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+
+            let basePath = await selectDirectory();
+
+            if (!basePath) {
+                // User cancelled or didn't select -> Use Default
+                const docsPath = await getDocumentsPath();
+                if (docsPath) {
+                    basePath = `${docsPath}/Speed`;
+                } else {
+                    return; // Cannot determine path
+                }
+            }
+
+            const projectPath = `${basePath}/${safeName}`;
+
+            // Create the directory
+            await createDirectory(projectPath);
+            setProjectRoot(projectPath);
+        } catch (error) {
+            console.error('Failed to create project directory:', error);
+            alert('Failed to create project directory: ' + error);
         }
     };
 

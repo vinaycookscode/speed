@@ -6,7 +6,7 @@ import { generateDetailedTasks } from '../utils/taskGenerator';
 export type Role = 'Product Manager' | 'Architect' | 'Tech Lead' | 'Software Engineer' | 'Backend Engineer' | 'QA Engineer' | 'DevOps Engineer';
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'reviewing';
 export type TaskStatus = 'todo' | 'in-progress' | 'review' | 'testing' | 'done';
-export type ProjectPhase = 'planning' | 'approval' | 'architecture' | 'development';
+export type ProjectPhase = 'planning' | 'approval' | 'architecture' | 'development' | 'completed';
 
 export interface Toast {
     id: string;
@@ -75,6 +75,7 @@ interface AgentStore {
     agents: Agent[];
     tasks: Task[];
     toasts: Toast[];
+    showCelebration: boolean;
 
     // All Projects
     projects: Project[];
@@ -104,6 +105,9 @@ interface AgentStore {
     setDeploymentAnalysis: (analysis: string | null) => void;
     toggleDeploymentConsole: (visible: boolean) => void;
 
+    // Celebration
+    setShowCelebration: (show: boolean) => void;
+
     tick: () => void;
     reset: () => void;
 }
@@ -118,6 +122,7 @@ export const useAgentStore = create<AgentStore>()(
             agents: [],
             tasks: [],
             toasts: [],
+            showCelebration: false,
             projects: [],
 
             deployment: {
@@ -136,6 +141,8 @@ export const useAgentStore = create<AgentStore>()(
             })),
             setDeploymentAnalysis: (analysis) => set(state => ({ deployment: { ...state.deployment, analysis } })),
             toggleDeploymentConsole: (visible) => set(state => ({ deployment: { ...state.deployment, isVisible: visible } })),
+
+            setShowCelebration: (show) => set({ showCelebration: show }),
 
             createProject: (idea) => {
                 const { activeProjectId, phase, agents, tasks, projects } = get();
@@ -406,6 +413,34 @@ export const useAgentStore = create<AgentStore>()(
                         const idleFrontendEngineers = newAgents.filter(a => (a.role === 'Software Engineer' || a.role === 'Tech Lead') && a.status === 'idle'); // Tech Lead can also do frontend
                         const todoFrontendTasks = newTasks.filter(t => t.type === 'frontend' && t.status === 'todo' && !t.assignedTo);
 
+                        // Check if ALL tasks are done (Backend + Frontend)
+                        const allTasksDone = newTasks.every(t => t.status === 'done');
+                        if (allTasksDone && newTasks.length > 0) {
+                            // Trigger Celebration
+                            set({ showCelebration: true });
+                            // Optional: Move phase to 'maintenance' or 'completed' to stop checking
+                            // For now, we'll rely on the UI to handle the display duration
+                            // But to prevent loop, let's mark phase as completed
+                            newPhase = 'completed' as any; // Cast as any if 'completed' isn't in type, or update type. 
+                            // Let's stick to just setting usage, but we need to stop this block running.
+                            // We'll update phase to 'completed' which isn't in the union type yet. 
+                            // Let's just update the TaskStatus to 'done' (already is).
+                            // We can check if showCelebration is already true? No, it gets set to false after 5s.
+                            // Let's add 'completed' to Phase type? 
+                            // For now, let's just use a flag or check if we already celebrated?
+                            // Actually, simpler: if all tasks done, we just stop assigning.
+                            // We need to trigger it once.
+                            // Let's add a 'completed' phase to the store definition later or implicitly handle it.
+                            // How about: if phase is 'development' and all done -> phase = 'maintenance' (we need to add this type)
+                            // Let's just assume we can stay in development but only trigger if !get().showCelebration?
+                            // No, that resets.
+
+                            // Let's just add logic: if all tasks done, and phase is 'development', set phase='done' (we need to add 'done' to types)
+                            // I'll update the type definition in a separate edit or just use 'development' and check if we haven't logged it?
+                            // Let's just add 'done' to ProjectPhase type in line 9 first? 
+                            // It's safer to just enable it.
+                        }
+
                         idleFrontendEngineers.forEach(agent => {
                             if (todoFrontendTasks.length > 0) {
                                 const task = todoFrontendTasks.shift();
@@ -477,22 +512,208 @@ export const useAgentStore = create<AgentStore>()(
                                     const timestamp = new Date().toLocaleTimeString();
 
                                     if (task.title.includes('Tech Stack')) {
-                                        outputContent = `> Analyzing project requirements...\n> Evaluating frontend frameworks...\n> Selecting backend architecture...\n\n**Selected Tech Stack:**\n- **Frontend:** React 18, TailwindCSS, Framer Motion\n- **Backend:** Node.js, Express, TypeScript\n- **Database:** PostgreSQL (Supabase)\n- **Auth:** Firebase Auth\n- **State:** Zustand\n\n> Writing architecture decision record (ADR-001)... DONE`;
+                                        outputContent = `> Analyzing project requirements...\n> Selecting backend architecture...\n\n**Selected Tech Stack:**\n- **Frontend:** React 18, TailwindCSS\n- **Backend:** Node.js, Express\n\n> Writing architecture decision record (ADR-001)... DONE`;
                                         agent.logs.push(`Output generated: Tech Stack defined.`);
                                     } else if (task.title.includes('Database Schema')) {
-                                        outputContent = `> Connecting to database designer...\n> Modeling 'Users' table...\n> Modeling 'Projects' table...\n> Modeling 'Tasks' table...\n\n\`\`\`sql\nCREATE TABLE users (\n  id UUID PRIMARY KEY,\n  email VARCHAR(255) UNIQUE,\n  role VARCHAR(50)\n);\n\nCREATE TABLE projects (\n  id UUID PRIMARY KEY,\n  name VARCHAR(255),\n  owner_id UUID REFERENCES users(id)\n);\n\`\`\`\n\n> Schema validation passed.`;
+                                        outputContent = `> Modeling 'Users' table...\n\`\`\`sql\nCREATE TABLE users (id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE);\n\`\`\`\n> Schema validation passed.`;
                                         agent.logs.push(`Output generated: Database Schema designed.`);
-                                    } else if (task.title.includes('Authentication')) {
-                                        outputContent = `> Installing dependencies...\n$ npm install firebase @firebase/auth\n\n> Configuring Firebase SDK...\n> Implementing 'useAuth' hook...\n> Creating Login component...\n> Creating Signup component...\n\n**Status:**\n- Auth Context: ✅ Implemented\n- Protected Routes: ✅ Configured\n- Login/Signup UI: ✅ Ready`;
-                                        agent.logs.push(`Output generated: Authentication implemented.`);
+                                    } else if (task.title.includes('Authentication') || task.title.includes('Login')) {
+                                        outputContent = `> Implementing Login component...\n
+\`\`\`tsx
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Lock, Mail, ArrowRight } from 'lucide-react';
+
+export default function Login() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const navigate = useNavigate();
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Simulate login
+    setTimeout(() => {
+        navigate('/dashboard');
+    }, 800);
+  };
+
+  return (
+    <div className="min-h-screen bg-black text-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-zinc-900/50 border border-zinc-800 p-8 rounded-2xl backdrop-blur-xl shadow-2xl">
+        <div className="text-center mb-8">
+          <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Welcome Back</h2>
+          <p className="text-zinc-500 mt-2">Sign in to your account</p>
+        </div>
+        
+        <form onSubmit={handleLogin} className="space-y-6">
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-1">Email Address</label>
+            <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                <input 
+                  type="email" 
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white placeholder-zinc-600"
+                  placeholder="name@company.com"
+                />
+            </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-1">Password</label>
+            <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                <input 
+                  type="password" 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white placeholder-zinc-600"
+                  placeholder="••••••••"
+                />
+            </div>
+          </div>
+
+          <button type="submit" className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white rounded-lg font-medium transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2">
+            Sign In <ArrowRight className="w-4 h-4" />
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+\`\`\`
+> Unit tests passed.`;
+                                        agent.logs.push(`Output generated: Authentication component created.`);
                                     } else if (task.title.includes('Dashboard')) {
-                                        outputContent = `> Scaffolding Dashboard layout...\n> Creating Sidebar component...\n> Creating Header component...\n> Integrating 'Recharts' for data visualization...\n\n$ git commit -m "feat: add dashboard layout"\n\n**Preview:** Dashboard is responsive and includes a collapsible sidebar.`;
+                                        outputContent = `> Scaffolding Dashboard layout...\n
+\`\`\`tsx
+import React from 'react';
+import { LayoutDashboard, Users, BarChart3, Settings, Bell, Search } from 'lucide-react';
+
+export default function Dashboard() {
+  return (
+    <div className="min-h-screen bg-black text-white flex">
+      {/* Sidebar */}
+      <aside className="w-64 bg-zinc-900/50 border-r border-zinc-800 backdrop-blur-xl hidden md:block">
+        <div className="p-6">
+            <h2 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Nexus<span className="text-white">Dash</span></h2>
+        </div>
+        <nav className="p-4 space-y-1">
+            <a href="#" className="flex items-center gap-3 px-4 py-3 bg-blue-500/10 text-blue-400 rounded-lg border border-blue-500/20 font-medium">
+                <LayoutDashboard className="w-5 h-5" /> Dashboard
+            </a>
+            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                <Users className="w-5 h-5" /> Customers
+            </a>
+            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                <BarChart3 className="w-5 h-5" /> Analytics
+            </a>
+            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                <Settings className="w-5 h-5" /> Settings
+            </a>
+        </nav>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-auto">
+        {/* Header */}
+        <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-black/50 backdrop-blur-sm sticky top-0 z-10">
+            <h1 className="text-xl font-semibold text-white">Dashboard Overview</h1>
+            <div className="flex items-center gap-4">
+                <div className="relative hidden md:block">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                    <input type="text" placeholder="Search..." className="bg-zinc-900 border border-zinc-800 rounded-full pl-10 pr-4 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 w-64 transition-colors" />
+                </div>
+                <button className="p-2 text-zinc-400 hover:text-white transition-colors relative">
+                    <Bell className="w-5 h-5" />
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full"></span>
+                </button>
+                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 ring-2 ring-zinc-800"></div>
+            </div>
+        </header>
+
+        <div className="p-8 space-y-8">
+            {/* Stats Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                    { label: 'Total Revenue', value: '$45,231.89', change: '+20.1%', color: 'text-green-400' },
+                    { label: 'Active Users', value: '+2,350', change: '+180.1%', color: 'text-blue-400' },
+                    { label: 'Sales', value: '+12,234', change: '+19%', color: 'text-purple-400' }
+                ].map((stat, i) => (
+                    <div key={i} className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-xl hover:border-zinc-700 transition-colors group">
+                        <div className="flex justify-between items-start mb-4">
+                            <span className="text-zinc-500 text-sm font-medium">{stat.label}</span>
+                            <span className={\`text-xs px-2 py-1 rounded-full bg-white/5 \${stat.color}\`}>{stat.change}</span>
+                        </div>
+                        <div className="text-3xl font-bold text-white group-hover:scale-[1.02] transition-transform origin-left">{stat.value}</div>
+                    </div>
+                ))}
+            </div>
+
+            {/* Content Area */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="h-64 bg-zinc-900/30 border border-zinc-800 rounded-xl p-6 flex flex-col justify-center items-center text-zinc-500 dashed-border">
+                    <BarChart3 className="w-12 h-12 mb-4 opacity-20" />
+                    <p>Sales Analytics Chart Component</p>
+                </div>
+                <div className="h-64 bg-zinc-900/30 border border-zinc-800 rounded-xl p-6 flex flex-col justify-center items-center text-zinc-500 dashed-border">
+                    <Users className="w-12 h-12 mb-4 opacity-20" />
+                    <p>Recent Signups Table Component</p>
+                </div>
+            </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+\`\`\`
+> Dashboard verified.`;
                                         agent.logs.push(`Output generated: Dashboard layout created.`);
                                     } else if (task.title.includes('API') || task.title.includes('Backend')) {
-                                        outputContent = `> Initializing Express router...\n> Defining API endpoints...\n> Implementing middleware for auth...\n\n\`\`\`typescript\nrouter.get('/projects', authMiddleware, getProjects);\nrouter.post('/projects', authMiddleware, createProject);\n\`\`\`\n\n> Running API tests...\n> Tests passed (12/12).`;
+                                        outputContent = `> Defining API endpoints...\n
+\`\`\`typescript
+import express from 'express';
+const router = express.Router();
+
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date() });
+});
+
+router.post('/data', (req, res) => {
+  const { payload } = req.body;
+  // TODO: Database insert
+  res.status(201).json({ success: true, id: '123' });
+});
+
+export default router;
+\`\`\`
+> Tests passed.`;
                                         agent.logs.push(`Output generated: Backend API implemented.`);
                                     } else {
-                                        outputContent = `> Analyzing task requirements...\n> Checking out branch 'feature/${task.title.toLowerCase().replace(/\s+/g, '-')}'...\n> Writing code...\n> Running unit tests...\n\n$ npm test\nPASS src/components/${task.title.replace(/\s+/g, '')}.test.tsx\n\n> Committing changes...\n> Pushing to remote...`;
+                                        // Generic React Component fallback
+                                        const compName = task.title.replace(/[^a-zA-Z0-9]/g, '');
+                                        outputContent = `> Implementation complete for ${task.title}.\n
+\`\`\`tsx
+import React from 'react';
+
+export default function ${compName}() {
+  return (
+    <div className="p-6 bg-zinc-800 border border-zinc-700 rounded-lg shadow-sm my-4">
+      <h2 className="text-xl font-bold text-white mb-2">${task.title}</h2>
+      <p className="text-zinc-400">
+        This component has been implemented as per the requirements for 
+        <strong> ${task.category}</strong>.
+      </p>
+      <div className="mt-4 p-4 bg-zinc-900 rounded border border-zinc-700/50 font-mono text-xs text-green-400">
+        Status: Active<br/>
+        Version: 1.0.0
+      </div>
+    </div>
+  );
+}
+\`\`\`
+> Unit tests passed.`;
                                         agent.logs.push(`Output generated: Implementation complete for ${task.title}.`);
                                     }
 
@@ -517,12 +738,72 @@ export const useAgentStore = create<AgentStore>()(
                                                 fileContent = codeBlockMatch[1];
                                             }
 
-                                            // Sanitize title for filename
-                                            const sanitizedTitle = task.title.replace(/[^a-zA-Z0-9]/g, '');
+                                            // Sanitize title for filename (Ensure PascalCase for React components)
+                                            let rawTitle = task.title.replace(/[^a-zA-Z0-9]/g, '');
+                                            if (rawTitle.length === 0) rawTitle = 'UntitledComponent';
+                                            const sanitizedTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
 
                                             if (task.type === 'frontend') {
                                                 filePath = `${rootPath}/src/components/${sanitizedTitle}.tsx`;
-                                                // Also update App.tsx to include it? (Too complex for now, user just wants to see it running)
+
+                                                // --- AUTO-WIRING LOGIC ---
+                                                const appPath = `${rootPath}/src/App.tsx`;
+                                                window.ipcRenderer.invoke('fs:readFile', appPath).then((appResult: any) => {
+                                                    if (appResult.success) {
+                                                        let appContent = appResult.data;
+                                                        const componentName = sanitizedTitle;
+
+                                                        // 1. Add Import if missing
+                                                        if (!appContent.includes(`import ${componentName}`)) {
+                                                            appContent = `import ${componentName} from './components/${componentName}';\n` + appContent;
+                                                        }
+
+                                                        // 2. Inject Component into JSX
+                                                        // Fallback: Just append to the div if standard structure exists
+                                                        // 2. Inject Route into App.tsx
+                                                        // Strategy: Find <Routes> and append <Route ... /> logic
+
+                                                        const routePath = componentName.toLowerCase().includes('login') ? '/login' :
+                                                            componentName.toLowerCase().includes('dashboard') ? '/dashboard' :
+                                                                `/${componentName.toLowerCase()}`;
+
+                                                        const routeElement = `<Route path="${routePath}" element={<${componentName} />} />`;
+
+                                                        if (appContent.includes('<Routes>')) {
+                                                            // Inject before the closing </Routes> tag
+                                                            appContent = appContent.replace(
+                                                                '</Routes>',
+                                                                `  ${routeElement}\n      </Routes>`
+                                                            );
+
+                                                            // Main Entry Point Logic (Direct Routing)
+                                                            const isLogin = componentName.includes('Login') || componentName.includes('Auth');
+                                                            const isDashboard = componentName.includes('Dashboard');
+
+                                                            if (isLogin || isDashboard) {
+                                                                const targetComponent = componentName;
+                                                                // Replace the default Home route with the new component permanently
+                                                                // This avoids redirects and 'Navigate' errors
+                                                                if (appContent.includes('<Route path="/" element={<Home />} />')) {
+                                                                    appContent = appContent.replace(
+                                                                        '<Route path="/" element={<Home />} />',
+                                                                        `<Route path="/" element={<${targetComponent} />} />`
+                                                                    );
+                                                                }
+                                                            }
+                                                        } else {
+                                                            // Fallback for non-router apps (shouldn't happen with new boilerplate)
+                                                            appContent = appContent.replace(
+                                                                '</div>',
+                                                                `<div className="mt-4"><${componentName} /></div></div>`
+                                                            );
+                                                        }
+
+                                                        // Write updated App.tsx
+                                                        window.ipcRenderer.invoke('fs:writeFile', appPath, appContent);
+                                                    }
+                                                });
+                                                // -------------------------
                                             } else if (task.type === 'backend') {
                                                 filePath = `${rootPath}/src/api/${sanitizedTitle}.ts`;
                                             } else if (task.type === 'setup') {
@@ -537,13 +818,21 @@ export const useAgentStore = create<AgentStore>()(
                                                             version: "0.0.0",
                                                             type: "module",
                                                             scripts: { "dev": "vite", "build": "vite build", "preview": "vite preview" },
-                                                            dependencies: { "react": "^18.2.0", "react-dom": "^18.2.0" },
-                                                            devDependencies: { "@types/react": "^18.2.66", "@types/react-dom": "^18.2.22", "@vitejs/plugin-react": "^4.2.1", "vite": "^5.2.0" }
+                                                            dependencies: { "react": "^18.2.0", "react-dom": "^18.2.0", "react-router-dom": "^6.22.3", "lucide-react": "^0.344.0" },
+                                                            devDependencies: { "@types/react": "^18.2.66", "@types/react-dom": "^18.2.22", "@vitejs/plugin-react": "^4.2.1", "vite": "^5.2.0", "autoprefixer": "^10.4.18", "postcss": "^8.4.35", "tailwindcss": "^3.4.1" }
                                                         }, null, 2)
                                                     },
                                                     {
                                                         path: `${rootPath}/vite.config.ts`,
                                                         content: `import { defineConfig } from 'vite'; import react from '@vitejs/plugin-react'; export default defineConfig({ plugins: [react()] });`
+                                                    },
+                                                    {
+                                                        path: `${rootPath}/postcss.config.js`,
+                                                        content: `export default { plugins: { tailwindcss: {}, autoprefixer: {}, }, }`
+                                                    },
+                                                    {
+                                                        path: `${rootPath}/tailwind.config.js`,
+                                                        content: `/** @type {import('tailwindcss').Config} */\nexport default {\n  content: [\n    "./index.html",\n    "./src/**/*.{js,ts,jsx,tsx}",\n  ],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n}`
                                                     },
                                                     {
                                                         path: `${rootPath}/index.html`,
@@ -555,11 +844,41 @@ export const useAgentStore = create<AgentStore>()(
                                                     },
                                                     {
                                                         path: `${rootPath}/src/App.tsx`,
-                                                        content: `import { useState } from 'react'; function App() { return (<div className="p-10"><h1>Generated App Running! 🚀</h1><p>The agents have successfully set up this environment.</p></div>); } export default App;`
+                                                        content: `import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useState } from 'react';
+
+function Home() {
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4">
+      <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent mb-4">
+        Generated App Running! 🚀
+      </h1>
+      <p className="text-zinc-400 max-w-md text-center">
+        The agents are currently building your application components.
+        As tasks complete, new routes will appear here.
+      </p>
+      <div className="mt-8 p-4 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-500">
+        Waiting for active tasks...
+      </div>
+    </div>
+  );
+}
+
+function App() { 
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Home />} />
+      </Routes>
+    </BrowserRouter>
+  ); 
+} 
+
+export default App;`
                                                     },
                                                     {
                                                         path: `${rootPath}/src/index.css`,
-                                                        content: `@tailwind base; @tailwind components; @tailwind utilities; body { font-family: system-ui; background: #111; color: #fff; }`
+                                                        content: `@tailwind base; @tailwind components; @tailwind utilities; body { font-family: system-ui; background: #09090b; color: #fff; }`
                                                     }
                                                 ];
 

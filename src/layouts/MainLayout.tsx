@@ -3,6 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Users, Layout, Terminal, Menu, List, CheckCircle, ChevronLeft, ChevronRight, Play, Code2, Shield, Folder, Settings } from 'lucide-react';
 import { useAgentStore } from '../store/agentStore';
 import DeploymentConsole from '../components/DeploymentConsole';
+import Celebration from '../components/Celebration';
 import { v4 as uuidv4 } from 'uuid';
 import { detectProjectType, getRunConfig } from '../utils/projectRunner';
 
@@ -256,6 +257,7 @@ const MainLayout = () => {
 
     return (
         <div className="flex h-screen bg-background text-white overflow-hidden font-sans relative selection:bg-primary/30">
+            {/* ... rest of the layout ... */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
                 <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-primary/10 blur-[120px] animate-float" />
                 <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-purple-500/10 blur-[120px] animate-float" style={{ animationDelay: '-4s' }} />
@@ -395,11 +397,13 @@ const MainLayout = () => {
                             <h2 className="font-semibold text-sm text-muted flex items-center gap-2">
                                 <span className={`w-2 h-2 rounded-full animate-pulse ${phase === 'planning' ? 'bg-blue-500' :
                                     phase === 'approval' ? 'bg-yellow-500' :
-                                        phase === 'architecture' ? 'bg-purple-500' : 'bg-green-500'
+                                        phase === 'architecture' ? 'bg-purple-500' :
+                                            phase === 'completed' ? 'bg-green-500' : 'bg-green-500'
                                     }`} />
                                 {phase === 'planning' ? 'Planning Phase' :
                                     phase === 'approval' ? 'Approval Phase' :
-                                        phase === 'architecture' ? 'Architecture Phase' : 'Development Phase'}
+                                        phase === 'architecture' ? 'Architecture Phase' :
+                                            phase === 'completed' ? 'Project Completed' : 'Development Phase'}
                             </h2>
                             <p className="text-sm font-medium text-white truncate max-w-md opacity-90">{projectIdea}</p>
                         </div>
@@ -422,6 +426,7 @@ const MainLayout = () => {
             </div>
 
             <DeploymentConsole />
+            <Celebration />
 
         </div>
     );

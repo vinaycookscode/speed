@@ -110,6 +110,10 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('app:getDocumentsPath', () => {
+    return app.getPath('documents');
+  })
+
   ipcMain.handle('terminal:exec', async (event, { cwd, cmd }: { cwd: string, cmd: string }) => {
     try {
       const { spawn } = await import('node:child_process');
@@ -134,13 +138,17 @@ app.whenReady().then(() => {
           const text = data.toString();
           stdout += text;
           // Stream logs
-          event.sender.send('deployment:log', { text, type: 'info' });
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('deployment:log', { text, type: 'info' });
+          }
         });
 
         child.stderr.on('data', (data) => {
           const text = data.toString();
           stderr += text;
-          event.sender.send('deployment:log', { text, type: 'error' });
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('deployment:log', { text, type: 'error' });
+          }
         });
 
         let resolved = false;

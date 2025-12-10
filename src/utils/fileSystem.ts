@@ -4,16 +4,8 @@
  * Uses Electron IPC to communicate with the main process.
  */
 
-// Define the IPC interface type (partial)
-interface IpcRenderer {
-    invoke(channel: string, ...args: any[]): Promise<any>;
-}
+// IPC Interface is globally defined
 
-declare global {
-    interface Window {
-        ipcRenderer: IpcRenderer;
-    }
-}
 
 export const selectDirectory = async (): Promise<string | null> => {
     console.log('[FileSystem] selectDirectory called');
@@ -63,4 +55,11 @@ export const createDirectory = async (path: string): Promise<void> => {
             throw new Error(result.error);
         }
     }
+};
+
+export const getDocumentsPath = async (): Promise<string | null> => {
+    if (window.ipcRenderer) {
+        return await window.ipcRenderer.invoke('app:getDocumentsPath');
+    }
+    return null;
 };

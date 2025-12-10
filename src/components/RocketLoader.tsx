@@ -1,4 +1,6 @@
 import { motion } from 'framer-motion';
+import { useState } from 'react';
+import { Rocket } from 'lucide-react';
 
 interface RocketLoaderProps {
     size?: number; // Size of the loader container
@@ -7,19 +9,14 @@ interface RocketLoaderProps {
 }
 
 const RocketLoader = ({ size = 100, iconSize = 32 }: RocketLoaderProps) => {
+    const [imageError, setImageError] = useState(false);
 
     return (
         <div
             className="relative flex items-center justify-center"
             style={{ width: size, height: size }}
         >
-            {/* Track Ring removed per user branding preference */}
-            {/* <div 
-                className="absolute inset-0 rounded-full border-2 border-white/10"
-                style={{ width: size, height: size }}
-            /> */}
-
-            {/* Rotating Container */}
+            {/* ... container ... */}
             <motion.div
                 className="absolute w-full h-full flex items-center justify-center"
                 animate={{ rotate: 360 }}
@@ -37,16 +34,18 @@ const RocketLoader = ({ size = 100, iconSize = 32 }: RocketLoaderProps) => {
                         transform: `rotate(90deg)` // Rocket points up originally, rotate 90deg to face direction of clockwise rotation
                     }}
                 >
-                    <img
-                        src="/assets/logo/icon_64x64.png"
-                        alt="Loading..."
-                        style={{ width: iconSize, height: iconSize }}
-                    />
+                    {!imageError ? (
+                        <img
+                            src="/assets/logo/icon_64x64.png"
+                            alt="Loading..."
+                            style={{ width: iconSize, height: iconSize }}
+                            onError={() => setImageError(true)}
+                        />
+                    ) : (
+                        <Rocket size={iconSize} className="text-primary fill-current" />
+                    )}
                 </div>
             </motion.div>
-
-            {/* Optional: Loading Text or Pulse in center */}
-            {/* <div className="w-2 h-2 bg-primary rounded-full animate-pulse" /> */}
         </div>
     );
 };
