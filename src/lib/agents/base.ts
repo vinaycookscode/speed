@@ -69,7 +69,7 @@ const MAX_LOG_ENTRIES = 100;
  *       expertise: ['requirements', 'user-stories'],
  *       brain: {
  *         provider: 'gemini',
- *         model: 'gemini-2.0-flash-exp',
+ *         model: 'gemini-2.5-flash',
  *         temperature: 0.7,
  *         maxTokens: 4096,
  *         systemPrompt: 'You are Maya, a PM...'

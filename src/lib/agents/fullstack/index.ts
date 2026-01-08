@@ -163,7 +163,7 @@ const defaultFullStackConfig: Partial<AgentConfig> = {
     expertise: ['react', 'typescript', 'node.js', 'postgresql', 'api-design'],
     brain: {
         provider: 'gemini',
-        model: 'gemini-2.0-flash-exp',
+        model: 'gemini-2.5-flash',
         temperature: 0.4,
         maxTokens: 8192, // Higher for code generation
         systemPrompt: FULLSTACK_SYSTEM_PROMPT,

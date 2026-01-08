@@ -251,7 +251,7 @@ const defaultMetaAgentConfig: Partial<AgentConfig> = {
     expertise: ['project-analysis', 'team-composition', 'scope-assessment'],
     brain: {
         provider: 'gemini',
-        model: 'gemini-2.0-flash-exp',
+        model: 'gemini-2.5-flash',
         temperature: 0.3, // Lower temperature for more consistent analysis
         maxTokens: 4096,
         systemPrompt: META_AGENT_SYSTEM_PROMPT,

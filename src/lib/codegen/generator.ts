@@ -104,7 +104,7 @@ export class CodeGenerator {
     constructor(config: CodeGeneratorConfig = {}) {
         this.config = {
             provider: config.provider || 'gemini',
-            model: config.model || 'gemini-2.0-flash-exp',
+            model: config.model || 'gemini-2.5-flash',
             temperature: config.temperature || 0.3,
         };
 

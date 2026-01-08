@@ -69,7 +69,7 @@ export interface AgentBrain {
 
     /**
      * The specific model to use.
-     * @default 'gemini-2.0-flash-exp'
+     * @default 'gemini-2.5-flash'
      */
     model: string;
 
