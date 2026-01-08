@@ -3,7 +3,7 @@
  * @module lib/agents
  *
  * Main entry point for the agent system.
- * Exports agent types, base class, and factory functions.
+ * Exports agent types, base class, and specialized agents.
  *
  * @copyright 2026 Speed Team
  * @license MIT
@@ -17,3 +17,16 @@ export * from './types';
 
 // Export base agent
 export { BaseAgent } from './base';
+
+// Export specialized agents
+export { MetaAgent, createMetaAgent } from './meta';
+export type { ProjectAnalysis, ProjectType, ComplexityLevel } from './meta';
+
+export { PMAgent, createPMAgent } from './pm';
+export type { UserStory, Epic } from './pm';
+
+export { TechLeadAgent, createTechLeadAgent } from './tech-lead';
+export type { TechnicalTask, CodeReview } from './tech-lead';
+
+export { FullStackAgent, createFullStackAgent } from './fullstack';
+export type { CodeOutput } from './fullstack';

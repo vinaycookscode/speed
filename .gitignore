@@ -31,3 +31,4 @@ dist-electron
 .env
 .env.*
 !.env.example
+.env
