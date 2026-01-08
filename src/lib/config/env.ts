@@ -58,9 +58,9 @@ export function getEnvConfig(): EnvConfig {
  * @returns The value or undefined
  */
 function getEnvVar(key: string): string | undefined {
-    // Vite environment (browser)
-    if (typeof import.meta !== 'undefined' && import.meta.env) {
-        return (import.meta.env as Record<string, string>)[key];
+    // Try window.env (can be set by Electron or scripts)
+    if (typeof window !== 'undefined' && (window as any).__env) {
+        return (window as any).__env[key];
     }
 
     // Node.js environment
