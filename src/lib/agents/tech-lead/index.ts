@@ -232,7 +232,7 @@ const defaultTechLeadConfig: Partial<AgentConfig> = {
     expertise: ['architecture', 'code-review', 'task-breakdown', 'technical-planning'],
     brain: {
         provider: 'gemini',
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.0-flash-exp',
         temperature: 0.4,
         maxTokens: 4096,
         systemPrompt: TECH_LEAD_SYSTEM_PROMPT,

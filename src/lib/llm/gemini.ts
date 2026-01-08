@@ -41,7 +41,7 @@ import { LLMError, LLMErrorCode } from './types';
 // ============================================================================
 
 /** Default model to use */
-const DEFAULT_MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = 'gemini-2.0-flash-exp';
 
 /** Default temperature for generation */
 const DEFAULT_TEMPERATURE = 0.7;
@@ -69,7 +69,7 @@ export interface GeminiClientConfig {
     /** Gemini API key */
     apiKey: string;
 
-    /** Model to use (default: gemini-1.5-flash) */
+    /** Model to use (default: gemini-2.0-flash-exp) */
     model?: string;
 
     /** Default generation options */
@@ -83,7 +83,7 @@ export interface GeminiClientConfig {
  * ```typescript
  * const client = new GeminiClient({
  *   apiKey: process.env.GEMINI_API_KEY!,
- *   model: 'gemini-1.5-flash'
+ *   model: 'gemini-2.0-flash-exp'
  * });
  *
  * const response = await client.generate({

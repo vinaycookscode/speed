@@ -196,7 +196,7 @@ const defaultPMAgentConfig: Partial<AgentConfig> = {
     expertise: ['requirements', 'user-stories', 'prioritization', 'stakeholder-communication'],
     brain: {
         provider: 'gemini',
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.0-flash-exp',
         temperature: 0.5,
         maxTokens: 4096,
         systemPrompt: PM_AGENT_SYSTEM_PROMPT,
