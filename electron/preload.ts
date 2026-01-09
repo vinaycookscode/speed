@@ -22,3 +22,10 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   // You can expose other APTs you need here.
   // ...
 })
+
+// Expose environment variables for LLM API access
+contextBridge.exposeInMainWorld('__env', {
+  VITE_GEMINI_API_KEY: process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
+  VITE_OPENAI_API_KEY: process.env.VITE_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+})
+
