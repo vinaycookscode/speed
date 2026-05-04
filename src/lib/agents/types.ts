@@ -65,7 +65,7 @@ export interface AgentBrain {
      * The LLM provider to use.
      * @default 'gemini'
      */
-    provider: 'gemini' | 'openai';
+    provider: 'gemini' | 'openai' | 'claude';
 
     /**
      * The specific model to use.

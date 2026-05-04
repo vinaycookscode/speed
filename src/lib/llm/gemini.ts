@@ -41,7 +41,7 @@ import { LLMError, LLMErrorCode } from './types';
 // ============================================================================
 
 /** Default model to use */
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-1.5-pro';
 
 /** Default temperature for generation */
 const DEFAULT_TEMPERATURE = 0.7;
@@ -441,9 +441,14 @@ export class GeminiClient implements ILLMClient {
             );
         }
 
-        if (errorMessage.includes('rate') || errorMessage.includes('quota')) {
+        let retryDelayStr = '';
+        if (error && typeof error === 'object' && 'retryDelay' in error) {
+            retryDelayStr = ` (Retry after ${(error as any).retryDelay}s)`;
+        }
+
+        if (errorMessage.toLowerCase().includes('rate') || errorMessage.toLowerCase().includes('quota') || errorMessage.includes('429')) {
             return new LLMError(
-                'Rate limit exceeded. Please try again later.',
+                `Rate limit exceeded. Details: ${errorMessage}${retryDelayStr}`,
                 LLMErrorCode.RATE_LIMITED,
                 error instanceof Error ? error : undefined
             );

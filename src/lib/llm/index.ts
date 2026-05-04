@@ -1,76 +1,76 @@
 /**
- * @fileoverview LLM Integration Module Exports
+ * @fileoverview LLM Integration — main entry point
  * @module lib/llm
- *
- * Main entry point for the LLM integration layer.
- * Provides a unified interface for working with different LLM providers.
- *
- * @copyright 2026 Speed Team
- * @license MIT
- *
- * @author Speed Team
- * @created 2026-01-08
  */
 
-// Export types
+// Re-export types
 export * from './types';
 
+// Re-export clients
 export { GeminiClient, createGeminiClient, type GeminiClientConfig } from './gemini';
+export { ClaudeClient, createClaudeClient, type ClaudeClientConfig } from './claude';
 
 // ============================================================================
 // FACTORY
 // ============================================================================
 
-import { GeminiClient, type GeminiClientConfig } from './gemini';
+import { GeminiClient } from './gemini';
+import { ClaudeClient } from './claude';
 import type { ILLMClient } from './types';
 
-/**
- * Supported LLM providers.
- */
-export type LLMProvider = 'gemini' | 'openai';
+/** Supported LLM providers. */
+export type LLMProvider = 'gemini' | 'openai' | 'claude';
 
-/**
- * Configuration for creating an LLM client.
- */
 export interface LLMClientConfig {
-    /** The LLM provider to use */
     provider: LLMProvider;
-
-    /** API key for the provider */
     apiKey: string;
-
-    /** Optional model override */
     model?: string;
 }
 
 /**
- * Create an LLM client for the specified provider.
- *
- * @param config - Client configuration
- * @returns The configured LLM client
- * @throws {Error} If the provider is not supported
+ * Create an LLM client for the given provider.
  *
  * @example
  * ```typescript
- * const client = createLLMClient({
- *   provider: 'gemini',
- *   apiKey: process.env.GEMINI_API_KEY!
- * });
+ * const client = createLLMClient({ provider: 'claude', apiKey: '...' });
  * ```
  */
 export function createLLMClient(config: LLMClientConfig): ILLMClient {
     switch (config.provider) {
         case 'gemini':
-            return new GeminiClient({
-                apiKey: config.apiKey,
-                model: config.model,
-            });
+            return new GeminiClient({ apiKey: config.apiKey, model: config.model });
+
+        case 'claude':
+            return new ClaudeClient({ apiKey: config.apiKey, model: config.model });
 
         case 'openai':
-            // TODO: Implement OpenAI client
-            throw new Error('OpenAI client not yet implemented');
+            throw new Error('OpenAI client not yet implemented.');
 
         default:
             throw new Error(`Unsupported LLM provider: ${config.provider}`);
     }
+}
+
+/**
+ * Resolve the best available provider from environment keys.
+ * Priority: claude → gemini (openai not implemented yet).
+ */
+export function resolveBestProvider(): { provider: LLMProvider; apiKey: string } | null {
+    const tryKey = (key: string) => {
+        if (typeof import.meta !== 'undefined' && (import.meta as any).env?.[key]) {
+            return (import.meta as any).env[key] as string;
+        }
+        if (typeof process !== 'undefined' && process.env?.[key]) {
+            return process.env[key] as string;
+        }
+        return null;
+    };
+
+    const claudeKey = tryKey('VITE_ANTHROPIC_API_KEY') || tryKey('ANTHROPIC_API_KEY');
+    if (claudeKey) return { provider: 'claude', apiKey: claudeKey };
+
+    const geminiKey = tryKey('VITE_GEMINI_API_KEY') || tryKey('GEMINI_API_KEY');
+    if (geminiKey) return { provider: 'gemini', apiKey: geminiKey };
+
+    return null;
 }

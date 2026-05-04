@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { generateDetailedTasks } from '../utils/taskGenerator';
+import { ProductManagerAgent } from '../agents/ProductManager';
+import { getSkill } from '../agents/skills';
 
 export type Role = 'Product Manager' | 'Architect' | 'Tech Lead' | 'Software Engineer' | 'Backend Engineer' | 'QA Engineer' | 'DevOps Engineer';
-export type AgentStatus = 'idle' | 'working' | 'blocked' | 'reviewing';
+export type AgentStatus = 'idle' | 'working' | 'blocked' | 'reviewing' | 'error';
 export type TaskStatus = 'todo' | 'in-progress' | 'review' | 'testing' | 'done';
 export type ProjectPhase = 'planning' | 'approval' | 'architecture' | 'development' | 'completed';
 
@@ -25,6 +26,18 @@ export interface DeploymentState {
     logs: LogEntry[];
     analysis: string | null;
     isVisible: boolean;
+}
+
+export interface Epic {
+    id: string;
+    title: string;
+    description: string;
+}
+
+export interface Story {
+    id: string;
+    epicId: string;
+    title: string;
 }
 
 export interface Agent {
@@ -53,7 +66,10 @@ export interface Task {
     comments: { author: string; text: string; timestamp: number }[];
     history: { status: TaskStatus; timestamp: number; by: string }[];
     originalAssigneeId?: string;
-    type?: 'setup' | 'frontend' | 'backend' | 'architecture';
+    epicId?: string;
+    storyId?: string;
+    assignableTo?: Role[];
+    type?: 'setup' | 'frontend' | 'backend' | 'architecture' | 'database' | 'api' | 'test' | 'devops';
 }
 
 export interface Project {
@@ -62,6 +78,8 @@ export interface Project {
     phase: ProjectPhase;
     agents: Agent[];
     tasks: Task[];
+    epics: Epic[];
+    stories: Story[];
     lastActive: number;
     rootPath?: string;
 }
@@ -74,6 +92,8 @@ interface AgentStore {
     phase: ProjectPhase;
     agents: Agent[];
     tasks: Task[];
+    epics: Epic[];
+    stories: Story[];
     toasts: Toast[];
     showCelebration: boolean;
 
@@ -91,9 +111,20 @@ interface AgentStore {
     addTask: (task: Task) => void;
     updateTaskStatus: (taskId: string, status: TaskStatus) => void;
     assignTask: (taskId: string, agentId: string) => void;
+    addComment: (taskId: string, text: string, author: string) => void;
     toggleTaskSelection: (taskId: string) => void;
     toggleCategorySelection: (category: string, selected: boolean) => void;
+    toggleEpicSelection: (epicId: string) => void;
+    selectAllTasks: () => void;
+    deselectAllTasks: () => void;
+    startPlanning: () => void;
     approvePlan: () => void;
+    setPlanningData: (epics: Epic[], stories: Story[], tasks: Task[]) => void;
+
+    // PM streaming progress
+    pmProgress: { charsReceived: number; estimatedTotal: number; streamedText: string } | null;
+    setPmProgress: (charsReceived: number, chunk: string) => void;
+    clearPmProgress: () => void;
 
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
     removeToast: (id: string) => void;
@@ -108,8 +139,13 @@ interface AgentStore {
     // Celebration
     setShowCelebration: (show: boolean) => void;
 
+    // Skills execution
+    skillRunning: Set<string>;
+    completeTaskExecution: (taskId: string, agentName: string, files: { path: string; content: string }[], summary: string) => void;
+
     tick: () => void;
     reset: () => void;
+    clearProjects: () => void;
 }
 
 export const useAgentStore = create<AgentStore>()(
@@ -121,9 +157,12 @@ export const useAgentStore = create<AgentStore>()(
             phase: 'planning',
             agents: [],
             tasks: [],
+            epics: [],
+            stories: [],
             toasts: [],
             showCelebration: false,
             projects: [],
+            pmProgress: null,
 
             deployment: {
                 status: 'idle',
@@ -144,8 +183,29 @@ export const useAgentStore = create<AgentStore>()(
 
             setShowCelebration: (show) => set({ showCelebration: show }),
 
+            skillRunning: new Set(),
+
+            completeTaskExecution: (taskId, agentName, files, summary) => set(state => {
+                const tasks = state.tasks.map(t => {
+                    if (t.id !== taskId) return t;
+                    const filesSummary = files.map(f => `\`${f.path}\`\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n');
+                    return {
+                        ...t,
+                        progress: 100,
+                        output: summary,
+                        outputHistory: [...t.outputHistory, {
+                            author: agentName,
+                            content: `${summary}\n\n${filesSummary}`,
+                            timestamp: Date.now(),
+                        }],
+                    };
+                });
+                state.skillRunning.delete(taskId);
+                return { tasks };
+            }),
+
             createProject: (idea) => {
-                const { activeProjectId, phase, agents, tasks, projects } = get();
+                const { activeProjectId, phase, agents, tasks, epics, stories, projects } = get();
 
                 // Save current project if exists
                 let newProjects = [...projects];
@@ -157,6 +217,8 @@ export const useAgentStore = create<AgentStore>()(
                             phase,
                             agents,
                             tasks,
+                            epics,
+                            stories,
                             lastActive: Date.now()
                         };
                     }
@@ -170,6 +232,8 @@ export const useAgentStore = create<AgentStore>()(
                     phase: 'planning',
                     agents: [],
                     tasks: [],
+                    epics: [],
+                    stories: [],
                     lastActive: Date.now(),
                     rootPath: undefined
                 };
@@ -200,7 +264,7 @@ export const useAgentStore = create<AgentStore>()(
             },
 
             switchProject: (projectId) => {
-                const { activeProjectId, phase, agents, tasks, projects } = get();
+                const { activeProjectId, phase, agents, tasks, epics, stories, projects } = get();
 
                 // Save current project
                 let newProjects = [...projects];
@@ -212,6 +276,8 @@ export const useAgentStore = create<AgentStore>()(
                             phase,
                             agents,
                             tasks,
+                            epics,
+                            stories,
                             lastActive: Date.now()
                         };
                     }
@@ -221,13 +287,15 @@ export const useAgentStore = create<AgentStore>()(
                 const targetProject = newProjects.find(p => p.id === projectId);
                 if (targetProject) {
                     set({
-                        projects: newProjects, // Update list with saved state
+                        projects: newProjects,
                         activeProjectId: targetProject.id,
                         projectIdea: targetProject.name,
                         rootPath: targetProject.rootPath || null,
                         phase: targetProject.phase,
                         agents: targetProject.agents,
-                        tasks: targetProject.tasks
+                        tasks: targetProject.tasks,
+                        epics: targetProject.epics ?? [],
+                        stories: targetProject.stories ?? [],
                     });
                 }
             },
@@ -262,18 +330,136 @@ export const useAgentStore = create<AgentStore>()(
                 tasks: state.tasks.map((t) => t.id === taskId ? { ...t, assignedTo: agentId } : t),
                 agents: state.agents.map((a) => a.id === agentId ? { ...a, currentTaskId: taskId, status: 'working' } : a)
             })),
+            addComment: (taskId, text, author) => set((state) => ({
+                tasks: state.tasks.map(t =>
+                    t.id === taskId
+                        ? { ...t, comments: [...t.comments, { author, text, timestamp: Date.now() }] }
+                        : t
+                ),
+            })),
             toggleTaskSelection: (taskId) => set((state) => ({
                 tasks: state.tasks.map((t) => t.id === taskId ? { ...t, selected: !t.selected } : t)
             })),
             toggleCategorySelection: (category, selected) => set((state) => ({
                 tasks: state.tasks.map((t) => t.category === category ? { ...t, selected } : t)
             })),
+            toggleEpicSelection: (epicId) => set((state) => {
+                const epicTasks = state.tasks.filter(t => t.epicId === epicId && t.status === 'todo');
+                const allSelected = epicTasks.every(t => t.selected);
+                return {
+                    tasks: state.tasks.map(t =>
+                        t.epicId === epicId && t.status === 'todo' ? { ...t, selected: !allSelected } : t
+                    ),
+                };
+            }),
+            selectAllTasks: () => set((state) => ({
+                tasks: state.tasks.map(t => t.status === 'todo' ? { ...t, selected: true } : t)
+            })),
+            deselectAllTasks: () => set((state) => ({
+                tasks: state.tasks.map(t => t.status === 'todo' ? { ...t, selected: false } : t)
+            })),
             approvePlan: () => set((state) => ({
                 phase: 'architecture',
-                tasks: state.tasks.filter(t => t.selected === true) // Only keep explicitly selected tasks
+                tasks: state.tasks.filter(t => t.selected === true)
             })),
+
+            startPlanning: () => {
+                const { projectIdea, agents } = get();
+                const pm = agents.find(a => a.role === 'Product Manager');
+                if (!pm || pm.status === 'working') return;
+
+                set(state => ({
+                    agents: state.agents.map(a =>
+                        a.id === pm.id
+                            ? { ...a, status: 'working', logs: [...a.logs, `Analyzing project idea: "${projectIdea.slice(0, 20)}..." (LLM)`] }
+                            : a
+                    )
+                }));
+
+                console.log('PM Agent: Starting task generation for:', projectIdea);
+
+                const timeoutId = setTimeout(() => {
+                    set((state) => {
+                        const updatedPm = state.agents.find(a => a.id === pm.id);
+                        if (updatedPm && updatedPm.status === 'working') {
+                            console.warn('PM Agent: Generation timed out after 120s.');
+                            return {
+                                agents: state.agents.map(a => a.id === pm.id
+                                    ? { ...a, status: 'error', logs: [...a.logs, 'Error: PM Analysis timed out (240s). Check your API key and network.'] }
+                                    : a
+                                )
+                            };
+                        }
+                        return {};
+                    });
+                }, 240000); // 240s: Phase 1 analysis (~15s) + Phase 2 streaming (~90s) + buffer
+
+                (async () => {
+                    try {
+                        const pmAgent = new ProductManagerAgent();
+                        const plan = await pmAgent.generatePlan(
+                            projectIdea,
+                            (charsReceived, chunk) => get().setPmProgress(charsReceived, chunk)
+                        );
+                        clearTimeout(timeoutId);
+                        get().clearPmProgress();
+
+                        set((state) => {
+                            const updatedPm = state.agents.find(a => a.id === pm.id);
+                            const updatedLogs = updatedPm
+                                ? [...updatedPm.logs, `Plan ready: ${plan.epics.length} epics, ${plan.stories.length} stories, ${plan.tasks.length} tasks.`]
+                                : [];
+                            console.log(`PM Agent: Plan ready — ${plan.epics.length} epics, ${plan.stories.length} stories, ${plan.tasks.length} tasks`);
+                            return {
+                                phase: 'approval',  // immediately move to backlog — don't wait for tick()
+                                epics: [...state.epics, ...plan.epics],
+                                stories: [...state.stories, ...plan.stories],
+                                tasks: [...state.tasks, ...plan.tasks],
+                                agents: state.agents.map(a =>
+                                    a.id === pm.id ? { ...a, status: 'idle', logs: updatedLogs } : a
+                                ),
+                            };
+                        });
+                    } catch (error: any) {
+                        clearTimeout(timeoutId);
+                        get().clearPmProgress();
+                        console.error('PM Agent: Error during generation:', error);
+                        const errMsg = error?.message ?? String(error);
+                        set((state) => {
+                            const updatedPm = state.agents.find(a => a.id === pm.id);
+                            const updatedLogs = updatedPm
+                                ? [...updatedPm.logs, `❌ Failed: ${errMsg}`]
+                                : [];
+                            return {
+                                agents: state.agents.map(a => a.id === pm.id
+                                    ? { ...a, status: 'error', logs: updatedLogs }
+                                    : a
+                                )
+                            };
+                        });
+                    }
+                })();
+            },
+
+            setPlanningData: (epics, stories, pmTasks) => set((state) => ({
+                epics,
+                stories,
+                tasks: [...state.tasks, ...pmTasks],
+            })),
+
+            setPmProgress: (charsReceived, chunk) => set((state) => {
+                const prev = state.pmProgress;
+                const streamedText = (prev?.streamedText ?? '') + chunk;
+                // Use a FIXED target of ~24 000 chars (16 000 tokens × 1.5 chars/token).
+                // Only expand if we exceed it — never shrink — so the ratio actually grows
+                // from 0 → 1 as streaming progresses instead of being locked at 0.91.
+                const estimatedTotal = Math.max(prev?.estimatedTotal ?? 24000, charsReceived + 1000);
+                return { pmProgress: { charsReceived, estimatedTotal, streamedText } };
+            }),
+
+            clearPmProgress: () => set({ pmProgress: null }),
             tick: () => {
-                const { agents, tasks, phase, projectIdea, activeProjectId, projects } = get();
+                const { agents, tasks, phase, activeProjectId, projects } = get();
                 let newAgents = [...agents];
                 let newTasks = [...tasks];
                 let newPhase = phase;
@@ -281,39 +467,13 @@ export const useAgentStore = create<AgentStore>()(
                 // --- Phase 1: Planning (Product Manager & Architect) ---
                 if (phase === 'planning') {
                     const pm = newAgents.find(a => a.role === 'Product Manager');
-                    const architect = newAgents.find(a => a.role === 'Architect');
 
-                    if (tasks.length === 0) {
-                        // 1. PM Generates Feature Tasks
-                        if (pm) {
-                            pm.status = 'working';
-                            pm.logs.push(`Analyzing project idea: "${projectIdea.slice(0, 20)}..."`);
-
-                            const featureTasks = generateDetailedTasks(projectIdea);
-
-                            newTasks = [...newTasks, ...featureTasks];
-                            pm.logs.push('Generated detailed technical requirements (PRD).');
-                            pm.status = 'idle';
-                        }
-
-                        // 2. Architect Generates Technical Tasks (Immediate)
-                        if (architect) {
-                            architect.status = 'working';
-                            architect.logs.push(`Analyzing technical requirements for: "${projectIdea.slice(0, 20)}..."`);
-
-                            const techTasks: Task[] = [
-                                { id: uuidv4(), title: 'Architecture: Environment Setup', description: 'Install Node.js, Git, global packages, and initialize repo.', status: 'todo', progress: 0, complexity: 5, dependencies: [], selected: true, category: 'Architecture', comments: [], history: [], outputHistory: [], type: 'setup' },
-                                { id: uuidv4(), title: 'Architecture: Define Tech Stack', description: `Select best tools for: ${projectIdea.slice(0, 20)}...`, status: 'todo', progress: 0, complexity: 8, dependencies: [], selected: true, category: 'Architecture', comments: [], history: [], outputHistory: [], type: 'architecture' },
-                                { id: uuidv4(), title: 'Architecture: Setup Project Boilerplate', description: 'Initialize repository and structure', status: 'todo', progress: 0, complexity: 5, dependencies: [], selected: true, category: 'Architecture', comments: [], history: [], outputHistory: [], type: 'architecture' },
-                                { id: uuidv4(), title: 'Architecture: Design Database Schema', description: `Model data for ${projectIdea.slice(0, 15)}...`, status: 'todo', progress: 0, complexity: 7, dependencies: [], selected: true, category: 'Architecture', comments: [], history: [], outputHistory: [], type: 'architecture' },
-                            ];
-
-                            newTasks = [...newTasks, ...techTasks];
-                            architect.logs.push('Generated technical tasks.');
-                            architect.status = 'idle';
-                        }
-
-                        newPhase = 'approval'; // Wait for user approval
+                    // PM planning is triggered explicitly via startPlanning() from TeamCreationView.
+                    // Phase transitions to 'approval' directly inside startPlanning() on success.
+                    // This block is a safety-net in case that set() races with tick().
+                    const pmHasTasks = newTasks.length > 0;
+                    if (pmHasTasks && pm?.status === 'idle') {
+                        newPhase = 'approval';
                     }
                 }
 
@@ -483,14 +643,36 @@ export const useAgentStore = create<AgentStore>()(
                                 agent.currentTaskId = task.id;
                             }
 
-                            // Calculate Progress
-                            const increment = (agent.capability || 5) / (task.complexity || 5) * 5; // Faster simulation
-                            task.progress = Math.min(100, (task.progress || 0) + increment);
+                            // Execute skill if available
+                            const { skillRunning, projectIdea } = get();
+                            if (!skillRunning.has(task.id)) {
+                                skillRunning.add(task.id);
+                                const skill = getSkill(task.type);
+                                if (skill) {
+                                    const projectName = projectIdea;
+                                    skill.execute({
+                                        taskTitle: task.title,
+                                        taskDescription: task.description,
+                                        projectName,
+                                    })
+                                        .then(output => {
+                                            get().completeTaskExecution(task.id, agent.name, output.files, output.summary);
+                                        })
+                                        .catch(err => {
+                                            console.error(`Skill execution failed for task "${task.title}":`, err);
+                                            skillRunning.delete(task.id);
+                                        });
+                                } else {
+                                    // Fallback: use fake progress for task types without a skill
+                                    const increment = (agent.capability || 5) / (task.complexity || 5) * 5;
+                                    task.progress = Math.min(100, (task.progress || 0) + increment);
+                                }
+                            }
 
                             // Completion Logic
                             if (task.progress >= 100) {
                                 // If task was in review, Architect decides
-                                if (task.status === 'review' && agent.role === 'Architect') {
+                                if ((task.status as string) === 'review' && agent.role === 'Architect') {
                                     // ... (Review logic handled separately or below)
                                     // Actually, if it's in-progress, it's not in review. 
                                     // Review tasks are 'review' status.
@@ -509,7 +691,6 @@ export const useAgentStore = create<AgentStore>()(
 
                                     // Generate Detailed Output based on task title and category
                                     let outputContent = '';
-                                    const timestamp = new Date().toLocaleTimeString();
 
                                     if (task.title.includes('Tech Stack')) {
                                         outputContent = `> Analyzing project requirements...\n> Selecting backend architecture...\n\n**Selected Tech Stack:**\n- **Frontend:** React 18, TailwindCSS\n- **Backend:** Node.js, Express\n\n> Writing architecture decision record (ADR-001)... DONE`;
@@ -1019,6 +1200,8 @@ export default App;`
                             phase: newPhase,
                             agents: newAgents,
                             tasks: newTasks,
+                            epics: get().epics,
+                            stories: get().stories,
                             lastActive: Date.now()
                         };
                     }
@@ -1027,7 +1210,7 @@ export default App;`
                 set({ agents: newAgents, tasks: newTasks, phase: newPhase, projects: updatedProjects });
             },
 
-            reset: () => set({ projectIdea: '', agents: [], tasks: [], phase: 'planning', activeProjectId: null }),
+            reset: () => set({ projectIdea: '', agents: [], tasks: [], epics: [], stories: [], phase: 'planning', activeProjectId: null }),
 
             addToast: (message, type = 'info') => {
                 const id = uuidv4();
@@ -1037,7 +1220,9 @@ export default App;`
                 }, 3000);
             },
 
-            removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }))
+            removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+            clearProjects: () => set({ projects: [], activeProjectId: null, projectIdea: '', agents: [], tasks: [], epics: [], stories: [], phase: 'planning' })
         }),
         {
             name: 'agent-storage',
@@ -1046,6 +1231,8 @@ export default App;`
                 activeProjectId: state.activeProjectId,
                 agents: state.agents,
                 tasks: state.tasks,
+                epics: state.epics,
+                stories: state.stories,
                 phase: state.phase,
                 projectIdea: state.projectIdea,
                 rootPath: state.rootPath
