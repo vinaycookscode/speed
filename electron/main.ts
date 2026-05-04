@@ -110,6 +110,20 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('fs:writeFiles', async (_: any, basePath: string, files: { path: string; content: string }[]) => {
+    try {
+      for (const file of files) {
+        const fullPath = path.join(basePath, file.path)
+        await fs.mkdir(path.dirname(fullPath), { recursive: true })
+        await fs.writeFile(fullPath, file.content, 'utf-8')
+      }
+      return { success: true, filesWritten: files.length }
+    } catch (error: any) {
+      console.error('Error writing multiple files:', error)
+      return { success: false, error: error.message }
+    }
+  })
+
   ipcMain.handle('app:getDocumentsPath', () => {
     return app.getPath('documents');
   })

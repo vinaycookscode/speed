@@ -201,6 +201,18 @@ export const useAgentStore = create<AgentStore>()(
                     };
                 });
                 state.skillRunning.delete(taskId);
+
+                // Write files to disk if rootPath is set and we're in Electron
+                if (state.rootPath && files.length > 0 && typeof window !== 'undefined' && (window as any).ipcRenderer) {
+                    (window as any).ipcRenderer.invoke('fs:writeFiles', state.rootPath, files).then((result: any) => {
+                        if (result.success) {
+                            console.log(`✅ Wrote ${result.filesWritten} files to ${state.rootPath}`);
+                        } else {
+                            console.error(`❌ Failed to write files:`, result.error);
+                        }
+                    });
+                }
+
                 return { tasks };
             }),
 
