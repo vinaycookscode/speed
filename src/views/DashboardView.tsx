@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { useAgentStore, Task } from '../store/agentStore';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-    Users, Activity, Code, Bug, Layout, Terminal, Clock,
+    Users, Activity, Code, Bug, Layout, Terminal,
     FileText, Folder, FolderOpen, ChevronDown, ChevronRight,
     CheckCircle2, Circle, Rocket, Search, X, Database,
     Server, Globe, Wrench, FlaskConical, Box, Layers3,
@@ -137,51 +137,130 @@ function DescriptionBody({ text }: { text: string }) {
 
 // ─── Agent grid card (meeting tab) ───────────────────────────────────────────
 
-const AgentCard = ({ agent, tasks, index }: { agent: any; tasks: Task[]; index: number }) => {
+const ROLE_ICON: Record<string, { icon: any; color: string }> = {
+    'Product Manager':   { icon: Users,    color: 'text-blue-400' },
+    'Architect':         { icon: Layout,   color: 'text-purple-400' },
+    'Tech Lead':         { icon: Terminal, color: 'text-green-400' },
+    'Software Engineer': { icon: Code,     color: 'text-yellow-400' },
+    'Backend Engineer':  { icon: Terminal, color: 'text-orange-400' },
+    'QA Engineer':       { icon: Bug,      color: 'text-red-400' },
+    'DevOps Engineer':   { icon: Box,      color: 'text-cyan-400' },
+};
+
+const STATUS_STYLE: Record<string, { bg: string; text: string; label: string }> = {
+    working:   { bg: 'bg-green-500/10 border-green-500/20', text: 'text-green-400', label: 'Working' },
+    idle:      { bg: 'bg-zinc-500/10 border-zinc-500/20',   text: 'text-zinc-400',  label: 'Idle' },
+    error:     { bg: 'bg-red-500/10 border-red-500/20',     text: 'text-red-400',   label: 'Error' },
+    blocked:   { bg: 'bg-yellow-500/10 border-yellow-500/20', text: 'text-yellow-400', label: 'Blocked' },
+    reviewing: { bg: 'bg-blue-500/10 border-blue-500/20',   text: 'text-blue-400',  label: 'Reviewing' },
+};
+
+const AgentLogPanel = ({ agent, tasks, index, expanded, onToggle }: { agent: any; tasks: Task[]; index: number; expanded: boolean; onToggle: () => void }) => {
     const currentTask = tasks.find(t => t.id === agent.currentTaskId);
-    const lastLog = agent.logs[agent.logs.length - 1];
-    const getRoleIcon = (role: string) => {
-        const cls = 'w-6 h-6';
-        switch (role) {
-            case 'Product Manager':   return <Users className={`${cls} text-blue-400`} />;
-            case 'Architect':         return <Layout className={`${cls} text-purple-400`} />;
-            case 'Tech Lead':         return <Terminal className={`${cls} text-green-400`} />;
-            case 'Software Engineer': return <Code className={`${cls} text-yellow-400`} />;
-            case 'Backend Engineer':  return <Terminal className={`${cls} text-orange-400`} />;
-            case 'QA Engineer':       return <Bug className={`${cls} text-red-400`} />;
-            default:                  return <Activity className={`${cls} text-gray-400`} />;
-        }
-    };
+    const completedTasks = tasks.filter(t => t.status === 'done' && t.history.some(h => h.by === agent.name));
+    const roleConfig = ROLE_ICON[agent.role] ?? { icon: Activity, color: 'text-gray-400' };
+    const RoleIcon = roleConfig.icon;
+    const statusStyle = STATUS_STYLE[agent.status] ?? STATUS_STYLE.idle;
+
     return (
         <motion.div
-            key={agent.id}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: index * 0.07 }}
-            className="bg-card border border-border rounded-xl p-6 flex flex-col items-center text-center hover:border-primary/50 transition-colors group relative overflow-hidden shadow-sm"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.06 }}
+            className="bg-card border border-border rounded-xl overflow-hidden"
         >
-            <div className={`absolute top-3 right-3 w-2 h-2 rounded-full ${
-                agent.status === 'working' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)] animate-pulse' :
-                agent.status === 'error'   ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' :
-                agent.status === 'idle'    ? 'bg-zinc-600' : 'bg-yellow-500'}`} />
-            <div className="w-14 h-14 rounded-xl bg-surface border border-border mb-4 flex items-center justify-center group-hover:scale-105 transition-transform duration-300 shadow-inner">
-                {getRoleIcon(agent.role)}
-            </div>
-            <h3 className="font-semibold text-base mb-1 text-white truncate w-full px-2">{agent.name}</h3>
-            <p className="text-xs font-medium text-primary mb-4 bg-primary/10 px-2 py-0.5 rounded-full border border-primary/10 truncate max-w-[90%]">{agent.role}</p>
-            <div className="w-full bg-surface border border-border rounded-lg p-3 text-xs text-left">
-                <div className="text-muted mb-1.5 flex items-center gap-1.5 font-medium"><Clock className="w-3 h-3" /> Latest Activity</div>
-                <div className={`font-mono mb-2 h-6 overflow-hidden ${agent.status === 'error' ? 'text-red-400' : 'text-zinc-300'}`}>
-                    <p className="truncate">{lastLog || (agent.status === 'idle' ? 'Waiting for tasks...' : 'Working...')}</p>
+            {/* Agent header */}
+            <button
+                onClick={onToggle}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/3 transition-colors cursor-pointer"
+            >
+                <div className="relative shrink-0">
+                    <div className="w-10 h-10 rounded-xl bg-surface border border-border flex items-center justify-center">
+                        <RoleIcon className={`w-5 h-5 ${roleConfig.color}`} />
+                    </div>
+                    <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-card ${
+                        agent.status === 'working' ? 'bg-green-500 animate-pulse' :
+                        agent.status === 'error'   ? 'bg-red-500' : 'bg-zinc-600'
+                    }`} />
                 </div>
+                <div className="flex-1 text-left min-w-0">
+                    <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm text-white truncate">{agent.name}</span>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${statusStyle.bg} ${statusStyle.text}`}>
+                            {statusStyle.label}
+                        </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 truncate">{agent.role}</p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-right hidden sm:block">
+                        <p className="text-[10px] text-zinc-600">Completed</p>
+                        <p className="text-sm font-bold text-white tabular-nums">{completedTasks.length}</p>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-zinc-600 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                </div>
+            </button>
+
+            <div
+                style={{ display: expanded ? 'block' : 'none' }}
+                className="border-t border-border px-4 py-3 space-y-3"
+            >
+                {/* Current task */}
                 {agent.status === 'working' && currentTask && (
-                    <>
-                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                            <motion.div className="bg-green-500 h-full rounded-full" initial={{ width: 0 }} animate={{ width: `${currentTask.progress}%` }} transition={{ duration: 0.5 }} />
+                    <div className="bg-green-500/5 border border-green-500/15 rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Zap className="w-3 h-3 text-green-400" />
+                            <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">Current Task</span>
                         </div>
-                        <div className="text-[10px] text-muted mt-1.5 truncate font-medium">{currentTask.title}</div>
-                    </>
+                        <p className="text-sm text-white font-medium mb-1 truncate">{currentTask.title}</p>
+                        {currentTask.currentActivity && (
+                            <p className="text-xs text-green-400/70 flex items-center gap-1.5 mb-2">
+                                <span className="w-1 h-1 rounded-full bg-green-400 animate-pulse" />
+                                {currentTask.currentActivity}
+                            </p>
+                        )}
+                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                            <motion.div
+                                className="bg-green-500 h-full rounded-full"
+                                animate={{ width: `${currentTask.progress}%` }}
+                                transition={{ duration: 0.5 }}
+                            />
+                        </div>
+                        <p className="text-[10px] text-zinc-600 mt-1 tabular-nums">{Math.round(currentTask.progress)}% complete</p>
+                    </div>
                 )}
+
+                {/* Log entries */}
+                <div>
+                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <FileText className="w-3 h-3" /> Activity Log ({agent.logs.length})
+                    </p>
+                    <div className="space-y-1 pr-1">
+                        {agent.logs.length === 0 ? (
+                            <p className="text-xs text-zinc-600 italic py-2">No activity yet</p>
+                        ) : (
+                            [...agent.logs].reverse().map((log: string, i: number) => {
+                                const isComplete = log.startsWith('Completed:');
+                                const isWorking = log.startsWith('Working on:');
+                                return (
+                                    <div
+                                        key={i}
+                                        className="flex items-start gap-2 py-1.5 px-2 rounded-lg hover:bg-white/3 transition-colors"
+                                    >
+                                        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
+                                            isComplete ? 'bg-green-500' : isWorking ? 'bg-blue-500' : 'bg-zinc-600'
+                                        }`} />
+                                        <p className={`text-xs leading-relaxed ${
+                                            isComplete ? 'text-green-400' : isWorking ? 'text-zinc-300' : 'text-zinc-400'
+                                        }`}>
+                                            {log}
+                                        </p>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </div>
             </div>
         </motion.div>
     );
@@ -196,6 +275,11 @@ const DashboardView = () => {
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
     const [collapsedStories, setCollapsedStories] = useState<Set<string>>(new Set());
     const [collapsedEpics, setCollapsedEpics] = useState<Set<string>>(new Set());
+    const [agentExpanded, setAgentExpanded] = useState<Record<string, boolean>>({});
+
+    const isAgentExpanded = (id: string) => agentExpanded[id] !== false; // default true
+    const toggleAgentExpanded = (id: string) =>
+        setAgentExpanded(prev => ({ ...prev, [id]: !(prev[id] !== false) }));
     const [search, setSearch] = useState('');
     const [typeFilter, setTypeFilter] = useState<string | null>(null);
     const [highlightedDeps, setHighlightedDeps] = useState<Set<string>>(new Set());
@@ -293,7 +377,7 @@ const DashboardView = () => {
 
     // ── Render ───────────────────────────────────────────────────────────────
     return (
-        <div className="h-full flex flex-col max-w-[1600px] mx-auto">
+        <div className={`flex flex-col max-w-[1600px] mx-auto ${activeTab === 'backlog' ? 'h-full' : 'min-h-full'}`}>
 
             {/* ── Top bar ─────────────────────────────────────────────────── */}
             <div className="flex items-center justify-between mb-5 gap-4 shrink-0">
@@ -336,8 +420,17 @@ const DashboardView = () => {
 
             {/* ── Content ─────────────────────────────────────────────────── */}
             {activeTab === 'meeting' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5 pb-8 overflow-y-auto">
-                    {agents.map((agent, i) => <AgentCard key={agent.id} agent={agent} tasks={tasks} index={i} />)}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-8">
+                    {agents.map((agent, i) => (
+                            <AgentLogPanel
+                                key={agent.id}
+                                agent={agent}
+                                tasks={tasks}
+                                index={i}
+                                expanded={isAgentExpanded(agent.id)}
+                                onToggle={() => toggleAgentExpanded(agent.id)}
+                            />
+                        ))}
                 </div>
             ) : (
                 <div className="flex gap-5 min-h-0 flex-1">

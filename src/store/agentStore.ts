@@ -62,6 +62,7 @@ export interface Task {
     selected?: boolean;
     category?: string; // e.g., "Phase 1: MVP", "Phase 2: Advanced"
     output?: string; // The result of the task (e.g., "Tech Stack: React, Node.js")
+    currentActivity?: string; // One-liner showing what the agent is currently working on
     outputHistory: { author: string; content: string; timestamp: number }[];
     comments: { author: string; text: string; timestamp: number }[];
     history: { status: TaskStatus; timestamp: number; by: string }[];
@@ -502,749 +503,175 @@ export const useAgentStore = create<AgentStore>()(
             clearPlanningEpics: () => set({ planningEpics: [] }),
             tick: () => {
                 const { agents, tasks, phase, activeProjectId, projects } = get();
+                if (phase === 'planning' || phase === 'approval') return;
+
                 let newAgents = [...agents];
                 let newTasks = [...tasks];
                 let newPhase = phase;
 
-                // --- Phase 1: Planning (Product Manager & Architect) ---
-                if (phase === 'planning') {
-                    const pm = newAgents.find(a => a.role === 'Product Manager');
-
-                    // PM planning is triggered explicitly via startPlanning() from TeamCreationView.
-                    // Phase transitions to 'approval' directly inside startPlanning() on success.
-                    // This block is a safety-net in case that set() races with tick().
-                    const pmHasTasks = newTasks.length > 0;
-                    if (pmHasTasks && pm?.status === 'idle') {
-                        newPhase = 'approval';
-                    }
-                }
-
-                // --- Phase 2: Approval (User) ---
-                if (phase === 'approval') {
-                    // Do nothing, wait for user to call approvePlan()
-                    return;
-                }
-
-                // --- Global: Resume Work on Assigned Tasks (e.g., Rejected Tasks) ---
-                newAgents.forEach(agent => {
-                    if (agent.status === 'idle') {
-                        const assignedTask = newTasks.find(t => t.assignedTo === agent.id && t.status === 'in-progress');
-                        if (assignedTask) {
-                            agent.status = 'working';
-                            agent.currentTaskId = assignedTask.id;
-                            agent.logs.push(`Resuming work on rejected task: ${assignedTask.title}`);
-                        }
-                    }
-                });
-
-                // --- Phase 3: Architecture (Architect) ---
+                // Skip architecture phase — go straight to development
                 if (phase === 'architecture') {
-                    const architect = newAgents.find(a => a.role === 'Architect');
+                    newPhase = 'development';
+                }
 
-                    // Note: Task generation moved to Planning phase
+                // Helper: check if a task's dependencies are all done
+                const depsReady = (task: Task) => {
+                    if (!task.dependencies || task.dependencies.length === 0) return true;
+                    return task.dependencies.every(depId =>
+                        newTasks.find(t => t.id === depId)?.status === 'done'
+                    );
+                };
 
+                // Role -> compatible task types
+                const roleCanWork: Record<string, string[]> = {
+                    'Architect':         ['architecture', 'setup', 'database', 'backend', 'api', 'devops'],
+                    'Tech Lead':         ['architecture', 'setup', 'backend', 'api', 'frontend', 'database'],
+                    'Software Engineer': ['frontend', 'backend', 'api', 'test', 'setup'],
+                    'Backend Engineer':  ['backend', 'api', 'database', 'setup', 'devops'],
+                    'QA Engineer':       ['test', 'frontend', 'backend'],
+                    'DevOps Engineer':   ['devops', 'setup', 'backend'],
+                    'Product Manager':   [],
+                };
 
-                    // Assign Architecture Tasks (Setup First, then others)
-                    if (architect && architect.status === 'idle') {
-                        // 1. Check for Setup Task
-                        const setupTask = newTasks.find(t => t.type === 'setup' && t.status !== 'done');
+                // Activity phrases by task type — gives users a feel for what the agent is doing
+                const activityByType: Record<string, string[]> = {
+                    setup:        ['Initializing project scaffolding', 'Configuring build toolchain', 'Setting up dev environment', 'Installing core dependencies'],
+                    architecture: ['Designing system architecture', 'Defining module boundaries', 'Mapping data flow patterns', 'Planning service topology'],
+                    database:     ['Writing database migrations', 'Defining table schemas', 'Setting up indexes & constraints', 'Configuring connection pooling'],
+                    backend:      ['Implementing business logic', 'Building service layer', 'Writing data models', 'Setting up middleware'],
+                    api:          ['Defining API endpoints', 'Implementing request handlers', 'Adding input validation', 'Setting up route guards'],
+                    frontend:     ['Building React components', 'Implementing UI layout', 'Adding state management', 'Styling with Tailwind CSS'],
+                    test:         ['Writing unit tests', 'Setting up test fixtures', 'Implementing integration tests', 'Adding edge case coverage'],
+                    devops:       ['Configuring CI/CD pipeline', 'Setting up Docker containers', 'Writing deployment scripts', 'Configuring monitoring'],
+                };
+                const getActivity = (type: string | undefined, progress: number): string => {
+                    const phrases = activityByType[type ?? 'backend'] ?? activityByType.backend;
+                    const idx = Math.min(Math.floor((progress / 100) * phrases.length), phrases.length - 1);
+                    return phrases[idx];
+                };
 
-                        // 2. Filter Architecture Tasks
-                        const archTasks = newTasks
-                            .filter(t => t.category === 'Architecture' && t.type !== 'setup' && t.status === 'todo')
-                            .sort((a, b) => b.complexity - a.complexity);
+                // 1. Assign tasks to idle agents
+                const idleAgents = newAgents.filter(a => a.status === 'idle' && a.role !== 'Product Manager');
 
-                        let taskToAssign: Task | undefined;
+                for (const agent of idleAgents) {
+                    const compatibleTypes = roleCanWork[agent.role] ?? [];
+                    const task = newTasks.find(t =>
+                        t.status === 'todo' &&
+                        !t.assignedTo &&
+                        compatibleTypes.includes(t.type ?? 'backend') &&
+                        depsReady(t)
+                    );
 
-                        if (setupTask && setupTask.status === 'todo') {
-                            taskToAssign = setupTask;
-                        } else if (setupTask && setupTask.status === 'in-progress') {
-                            // Waiting for setup to finish
-                            taskToAssign = undefined;
-                        } else if (!setupTask || setupTask.status === 'done') {
-                            // Setup done, move to Arch tasks
-                            taskToAssign = archTasks[0];
-                        }
-
-                        if (taskToAssign) {
-                            taskToAssign.assignedTo = architect.id;
-                            taskToAssign.status = 'in-progress';
-                            taskToAssign.progress = 5;
-                            architect.status = 'working';
-                            architect.currentTaskId = taskToAssign.id;
-                            architect.logs.push(`Started working on: ${taskToAssign.title} ${taskToAssign.type === 'setup' ? '(Initial Setup)' : ''}`);
-                        } else {
-                            // Check if ALL architecture tasks are done
-                            const incompleteArchTasks = newTasks.some(t => (t.category === 'Architecture' || t.type === 'setup') && t.status !== 'done');
-
-                            if (!incompleteArchTasks) {
-                                newPhase = 'development';
-                                architect.logs.push('Architecture phase complete. Moving to Backend Development.');
-                            }
-                        }
+                    if (task) {
+                        task.assignedTo = agent.id;
+                        task.status = 'in-progress';
+                        task.progress = 10;
+                        task.currentActivity = getActivity(task.type, 10);
+                        agent.status = 'working';
+                        agent.currentTaskId = task.id;
+                        agent.logs.push(`Working on: ${task.title}`);
                     }
                 }
 
-                // --- Phase 4: Development (Team) ---
-                if (phase === 'development') {
-                    // 1. Assign Tasks (Manager Logic)
-                    // Logic: Backend First -> Frontend
-
-                    const backendTasksDone = newTasks.filter(t => t.type === 'backend').every(t => t.status === 'done');
-
-                    // -- BACKEND ASSIGNMENT --
-                    const idleBackendEngineers = newAgents.filter(a => a.role === 'Backend Engineer' && a.status === 'idle');
-                    const todoBackendTasks = newTasks.filter(t => t.type === 'backend' && t.status === 'todo' && !t.assignedTo);
-
-                    idleBackendEngineers.forEach(agent => {
-                        if (todoBackendTasks.length > 0) {
-                            const task = todoBackendTasks.shift();
-                            if (task) {
-                                task.assignedTo = agent.id;
-                                task.status = 'in-progress';
-                                task.progress = 5;
-                                agent.status = 'working';
-                                agent.currentTaskId = task.id;
-                                agent.logs.push(`Started Backend Task: ${task.title}`);
-                            }
-                        }
-                    });
-
-                    // -- FRONTEND ASSIGNMENT (Only if Backend is Done) --
-                    if (backendTasksDone) {
-                        const idleFrontendEngineers = newAgents.filter(a => (a.role === 'Software Engineer' || a.role === 'Tech Lead') && a.status === 'idle'); // Tech Lead can also do frontend
-                        const todoFrontendTasks = newTasks.filter(t => t.type === 'frontend' && t.status === 'todo' && !t.assignedTo);
-
-                        // Check if ALL tasks are done (Backend + Frontend)
-                        const allTasksDone = newTasks.every(t => t.status === 'done');
-                        if (allTasksDone && newTasks.length > 0) {
-                            // Trigger Celebration
-                            set({ showCelebration: true });
-                            // Optional: Move phase to 'maintenance' or 'completed' to stop checking
-                            // For now, we'll rely on the UI to handle the display duration
-                            // But to prevent loop, let's mark phase as completed
-                            newPhase = 'completed' as any; // Cast as any if 'completed' isn't in type, or update type. 
-                            // Let's stick to just setting usage, but we need to stop this block running.
-                            // We'll update phase to 'completed' which isn't in the union type yet. 
-                            // Let's just update the TaskStatus to 'done' (already is).
-                            // We can check if showCelebration is already true? No, it gets set to false after 5s.
-                            // Let's add 'completed' to Phase type? 
-                            // For now, let's just use a flag or check if we already celebrated?
-                            // Actually, simpler: if all tasks done, we just stop assigning.
-                            // We need to trigger it once.
-                            // Let's add a 'completed' phase to the store definition later or implicitly handle it.
-                            // How about: if phase is 'development' and all done -> phase = 'maintenance' (we need to add this type)
-                            // Let's just assume we can stay in development but only trigger if !get().showCelebration?
-                            // No, that resets.
-
-                            // Let's just add logic: if all tasks done, and phase is 'development', set phase='done' (we need to add 'done' to types)
-                            // I'll update the type definition in a separate edit or just use 'development' and check if we haven't logged it?
-                            // Let's just add 'done' to ProjectPhase type in line 9 first? 
-                            // It's safer to just enable it.
-                        }
-
-                        idleFrontendEngineers.forEach(agent => {
-                            if (todoFrontendTasks.length > 0) {
-                                const task = todoFrontendTasks.shift();
-                                if (task) {
-                                    task.assignedTo = agent.id;
-                                    task.status = 'in-progress';
-                                    task.progress = 5;
-                                    agent.status = 'working';
-                                    agent.currentTaskId = task.id;
-                                    agent.logs.push(`Started Frontend Task: ${task.title} (integrating APIs)`);
-                                }
-                            }
-                        });
-                    }
-                }
-
-                // 2. Process Tasks (Global for all phases - Parallel Execution)
-                // Auto-start assigned tasks
-                newTasks.forEach(t => {
-                    if (t.status === 'todo' && t.assignedTo) {
-                        t.status = 'in-progress';
-                        t.progress = 5;
-                        const assignee = newAgents.find(a => a.id === t.assignedTo);
-                        if (assignee) {
-                            assignee.status = 'working';
-                            assignee.logs.push(`Auto-started: ${t.title}`);
-                        }
-                    }
-                });
-
-                // Iterate through ALL in-progress tasks to simulate parallel work
+                // 2. Progress in-progress tasks
                 newTasks.forEach(task => {
-                    if (task.status === 'in-progress' && task.assignedTo) {
-                        const agent = newAgents.find(a => a.id === task.assignedTo);
-                        if (agent) {
-                            // Update Agent Status to Working
-                            agent.status = 'working';
-                            // Update UI to show this task (or keep existing if already working on one)
-                            if (!agent.currentTaskId || agent.currentTaskId === task.id) {
-                                agent.currentTaskId = task.id;
-                            }
+                    if (task.status !== 'in-progress' || !task.assignedTo) return;
 
-                            // Execute skill if available
-                            const { skillRunning, projectIdea } = get();
-                            if (!skillRunning.has(task.id)) {
-                                skillRunning.add(task.id);
-                                const skill = getSkill(task.type);
-                                if (skill) {
-                                    const projectName = projectIdea;
-                                    skill.execute({
-                                        taskTitle: task.title,
-                                        taskDescription: task.description,
-                                        projectName,
-                                    })
-                                        .then(output => {
-                                            get().completeTaskExecution(task.id, agent.name, output.files, output.summary);
-                                        })
-                                        .catch(err => {
-                                            console.error(`Skill execution failed for task "${task.title}":`, err);
-                                            skillRunning.delete(task.id);
-                                        });
-                                } else {
-                                    // Fallback: use fake progress for task types without a skill
-                                    const increment = (agent.capability || 5) / (task.complexity || 5) * 5;
-                                    task.progress = Math.min(100, (task.progress || 0) + increment);
-                                }
-                            }
+                    const agent = newAgents.find(a => a.id === task.assignedTo);
+                    if (!agent) return;
 
-                            // Completion Logic
-                            if (task.progress >= 100) {
-                                // If task was in review, Architect decides
-                                if ((task.status as string) === 'review' && agent.role === 'Architect') {
-                                    // ... (Review logic handled separately or below)
-                                    // Actually, if it's in-progress, it's not in review. 
-                                    // Review tasks are 'review' status.
-                                    // But wait, if an Architect is reviewing, the task status is 'review'.
-                                    // We need to handle 'review' status progression too if assigned to Architect.
-                                } else {
-                                    // Normal completion -> Move to Review
-                                    task.status = 'review';
-                                    task.progress = 0; // Reset progress for review
-                                    task.history.push({ status: 'review', timestamp: Date.now(), by: agent.name });
-                                    task.originalAssigneeId = agent.id; // Remember who did it
-                                    task.assignedTo = undefined; // Unassign so Architect can pick it up
-                                    agent.logs.push(`Submitted for review: ${task.title}`);
-                                    agent.currentTaskId = undefined; // Clear focus
-                                    agent.status = 'idle'; // Reset status so they can pick up new tasks
+                    agent.status = 'working';
+                    agent.currentTaskId = task.id;
+                    task.currentActivity = getActivity(task.type, task.progress || 0);
 
-                                    // Generate Detailed Output based on task title and category
-                                    let outputContent = '';
-
-                                    if (task.title.includes('Tech Stack')) {
-                                        outputContent = `> Analyzing project requirements...\n> Selecting backend architecture...\n\n**Selected Tech Stack:**\n- **Frontend:** React 18, TailwindCSS\n- **Backend:** Node.js, Express\n\n> Writing architecture decision record (ADR-001)... DONE`;
-                                        agent.logs.push(`Output generated: Tech Stack defined.`);
-                                    } else if (task.title.includes('Database Schema')) {
-                                        outputContent = `> Modeling 'Users' table...\n\`\`\`sql\nCREATE TABLE users (id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE);\n\`\`\`\n> Schema validation passed.`;
-                                        agent.logs.push(`Output generated: Database Schema designed.`);
-                                    } else if (task.title.includes('Authentication') || task.title.includes('Login')) {
-                                        outputContent = `> Implementing Login component...\n
-\`\`\`tsx
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Lock, Mail, ArrowRight } from 'lucide-react';
-
-export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const navigate = useNavigate();
-
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Simulate login
-    setTimeout(() => {
-        navigate('/dashboard');
-    }, 800);
-  };
-
-  return (
-    <div className="min-h-screen bg-black text-white flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-zinc-900/50 border border-zinc-800 p-8 rounded-2xl backdrop-blur-xl shadow-2xl">
-        <div className="text-center mb-8">
-          <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Welcome Back</h2>
-          <p className="text-zinc-500 mt-2">Sign in to your account</p>
-        </div>
-        
-        <form onSubmit={handleLogin} className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-1">Email Address</label>
-            <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                <input 
-                  type="email" 
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white placeholder-zinc-600"
-                  placeholder="name@company.com"
-                />
-            </div>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-1">Password</label>
-            <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                <input 
-                  type="password" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-zinc-950 border border-zinc-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white placeholder-zinc-600"
-                  placeholder="••••••••"
-                />
-            </div>
-          </div>
-
-          <button type="submit" className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white rounded-lg font-medium transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2">
-            Sign In <ArrowRight className="w-4 h-4" />
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-\`\`\`
-> Unit tests passed.`;
-                                        agent.logs.push(`Output generated: Authentication component created.`);
-                                    } else if (task.title.includes('Dashboard')) {
-                                        outputContent = `> Scaffolding Dashboard layout...\n
-\`\`\`tsx
-import React from 'react';
-import { LayoutDashboard, Users, BarChart3, Settings, Bell, Search } from 'lucide-react';
-
-export default function Dashboard() {
-  return (
-    <div className="min-h-screen bg-black text-white flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-zinc-900/50 border-r border-zinc-800 backdrop-blur-xl hidden md:block">
-        <div className="p-6">
-            <h2 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Nexus<span className="text-white">Dash</span></h2>
-        </div>
-        <nav className="p-4 space-y-1">
-            <a href="#" className="flex items-center gap-3 px-4 py-3 bg-blue-500/10 text-blue-400 rounded-lg border border-blue-500/20 font-medium">
-                <LayoutDashboard className="w-5 h-5" /> Dashboard
-            </a>
-            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
-                <Users className="w-5 h-5" /> Customers
-            </a>
-            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
-                <BarChart3 className="w-5 h-5" /> Analytics
-            </a>
-            <a href="#" className="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
-                <Settings className="w-5 h-5" /> Settings
-            </a>
-        </nav>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        {/* Header */}
-        <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-black/50 backdrop-blur-sm sticky top-0 z-10">
-            <h1 className="text-xl font-semibold text-white">Dashboard Overview</h1>
-            <div className="flex items-center gap-4">
-                <div className="relative hidden md:block">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                    <input type="text" placeholder="Search..." className="bg-zinc-900 border border-zinc-800 rounded-full pl-10 pr-4 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 w-64 transition-colors" />
-                </div>
-                <button className="p-2 text-zinc-400 hover:text-white transition-colors relative">
-                    <Bell className="w-5 h-5" />
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full"></span>
-                </button>
-                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 ring-2 ring-zinc-800"></div>
-            </div>
-        </header>
-
-        <div className="p-8 space-y-8">
-            {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {[
-                    { label: 'Total Revenue', value: '$45,231.89', change: '+20.1%', color: 'text-green-400' },
-                    { label: 'Active Users', value: '+2,350', change: '+180.1%', color: 'text-blue-400' },
-                    { label: 'Sales', value: '+12,234', change: '+19%', color: 'text-purple-400' }
-                ].map((stat, i) => (
-                    <div key={i} className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-xl hover:border-zinc-700 transition-colors group">
-                        <div className="flex justify-between items-start mb-4">
-                            <span className="text-zinc-500 text-sm font-medium">{stat.label}</span>
-                            <span className={\`text-xs px-2 py-1 rounded-full bg-white/5 \${stat.color}\`}>{stat.change}</span>
-                        </div>
-                        <div className="text-3xl font-bold text-white group-hover:scale-[1.02] transition-transform origin-left">{stat.value}</div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Content Area */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="h-64 bg-zinc-900/30 border border-zinc-800 rounded-xl p-6 flex flex-col justify-center items-center text-zinc-500 dashed-border">
-                    <BarChart3 className="w-12 h-12 mb-4 opacity-20" />
-                    <p>Sales Analytics Chart Component</p>
-                </div>
-                <div className="h-64 bg-zinc-900/30 border border-zinc-800 rounded-xl p-6 flex flex-col justify-center items-center text-zinc-500 dashed-border">
-                    <Users className="w-12 h-12 mb-4 opacity-20" />
-                    <p>Recent Signups Table Component</p>
-                </div>
-            </div>
-        </div>
-      </main>
-    </div>
-  );
-}
-\`\`\`
-> Dashboard verified.`;
-                                        agent.logs.push(`Output generated: Dashboard layout created.`);
-                                    } else if (task.title.includes('API') || task.title.includes('Backend')) {
-                                        outputContent = `> Defining API endpoints...\n
-\`\`\`typescript
-import express from 'express';
-const router = express.Router();
-
-router.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date() });
-});
-
-router.post('/data', (req, res) => {
-  const { payload } = req.body;
-  // TODO: Database insert
-  res.status(201).json({ success: true, id: '123' });
-});
-
-export default router;
-\`\`\`
-> Tests passed.`;
-                                        agent.logs.push(`Output generated: Backend API implemented.`);
-                                    } else {
-                                        // Generic React Component fallback
-                                        const compName = task.title.replace(/[^a-zA-Z0-9]/g, '');
-                                        outputContent = `> Implementation complete for ${task.title}.\n
-\`\`\`tsx
-import React from 'react';
-
-export default function ${compName}() {
-  return (
-    <div className="p-6 bg-zinc-800 border border-zinc-700 rounded-lg shadow-sm my-4">
-      <h2 className="text-xl font-bold text-white mb-2">${task.title}</h2>
-      <p className="text-zinc-400">
-        This component has been implemented as per the requirements for 
-        <strong> ${task.category}</strong>.
-      </p>
-      <div className="mt-4 p-4 bg-zinc-900 rounded border border-zinc-700/50 font-mono text-xs text-green-400">
-        Status: Active<br/>
-        Version: 1.0.0
-      </div>
-    </div>
-  );
-}
-\`\`\`
-> Unit tests passed.`;
-                                        agent.logs.push(`Output generated: Implementation complete for ${task.title}.`);
-                                    }
-
-                                    if (outputContent) {
-                                        task.output = outputContent; // Keep latest for backward compatibility if needed
-                                        task.outputHistory.push({
-                                            author: agent.name,
-                                            content: outputContent,
-                                            timestamp: Date.now()
-                                        });
-
-                                        // --- FILE WRITING LOGIC ---
-                                        const { rootPath } = get();
-                                        if (rootPath && window.ipcRenderer) {
-                                            // Determine filename based on task
-                                            let filePath = '';
-                                            let fileContent = outputContent;
-
-                                            // Extract code block if present
-                                            const codeBlockMatch = outputContent.match(/```(?:typescript|sql|javascript|tsx|json)?\n([\s\S]*?)```/);
-                                            if (codeBlockMatch) {
-                                                fileContent = codeBlockMatch[1];
-                                            }
-
-                                            // Sanitize title for filename (Ensure PascalCase for React components)
-                                            let rawTitle = task.title.replace(/[^a-zA-Z0-9]/g, '');
-                                            if (rawTitle.length === 0) rawTitle = 'UntitledComponent';
-                                            const sanitizedTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
-
-                                            if (task.type === 'frontend') {
-                                                filePath = `${rootPath}/src/components/${sanitizedTitle}.tsx`;
-
-                                                // --- AUTO-WIRING LOGIC ---
-                                                const appPath = `${rootPath}/src/App.tsx`;
-                                                window.ipcRenderer.invoke('fs:readFile', appPath).then((appResult: any) => {
-                                                    if (appResult.success) {
-                                                        let appContent = appResult.data;
-                                                        const componentName = sanitizedTitle;
-
-                                                        // 1. Add Import if missing
-                                                        if (!appContent.includes(`import ${componentName}`)) {
-                                                            appContent = `import ${componentName} from './components/${componentName}';\n` + appContent;
-                                                        }
-
-                                                        // 2. Inject Component into JSX
-                                                        // Fallback: Just append to the div if standard structure exists
-                                                        // 2. Inject Route into App.tsx
-                                                        // Strategy: Find <Routes> and append <Route ... /> logic
-
-                                                        const routePath = componentName.toLowerCase().includes('login') ? '/login' :
-                                                            componentName.toLowerCase().includes('dashboard') ? '/dashboard' :
-                                                                `/${componentName.toLowerCase()}`;
-
-                                                        const routeElement = `<Route path="${routePath}" element={<${componentName} />} />`;
-
-                                                        if (appContent.includes('<Routes>')) {
-                                                            // Inject before the closing </Routes> tag
-                                                            appContent = appContent.replace(
-                                                                '</Routes>',
-                                                                `  ${routeElement}\n      </Routes>`
-                                                            );
-
-                                                            // Main Entry Point Logic (Direct Routing)
-                                                            const isLogin = componentName.includes('Login') || componentName.includes('Auth');
-                                                            const isDashboard = componentName.includes('Dashboard');
-
-                                                            if (isLogin || isDashboard) {
-                                                                const targetComponent = componentName;
-                                                                // Replace the default Home route with the new component permanently
-                                                                // This avoids redirects and 'Navigate' errors
-                                                                if (appContent.includes('<Route path="/" element={<Home />} />')) {
-                                                                    appContent = appContent.replace(
-                                                                        '<Route path="/" element={<Home />} />',
-                                                                        `<Route path="/" element={<${targetComponent} />} />`
-                                                                    );
-                                                                }
-                                                            }
-                                                        } else {
-                                                            // Fallback for non-router apps (shouldn't happen with new boilerplate)
-                                                            appContent = appContent.replace(
-                                                                '</div>',
-                                                                `<div className="mt-4"><${componentName} /></div></div>`
-                                                            );
-                                                        }
-
-                                                        // Write updated App.tsx
-                                                        window.ipcRenderer.invoke('fs:writeFile', appPath, appContent);
-                                                    }
-                                                });
-                                                // -------------------------
-                                            } else if (task.type === 'backend') {
-                                                filePath = `${rootPath}/src/api/${sanitizedTitle}.ts`;
-                                            } else if (task.type === 'setup') {
-                                                // --- GENERATE FULL BOILERPLATE ---
-                                                // We write multiple files here for a working setup
-                                                const boilerplate = [
-                                                    {
-                                                        path: `${rootPath}/package.json`,
-                                                        content: JSON.stringify({
-                                                            name: "generated-app",
-                                                            private: true,
-                                                            version: "0.0.0",
-                                                            type: "module",
-                                                            scripts: { "dev": "vite", "build": "vite build", "preview": "vite preview" },
-                                                            dependencies: { "react": "^18.2.0", "react-dom": "^18.2.0", "react-router-dom": "^6.22.3", "lucide-react": "^0.344.0" },
-                                                            devDependencies: { "@types/react": "^18.2.66", "@types/react-dom": "^18.2.22", "@vitejs/plugin-react": "^4.2.1", "vite": "^5.2.0", "autoprefixer": "^10.4.18", "postcss": "^8.4.35", "tailwindcss": "^3.4.1" }
-                                                        }, null, 2)
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/vite.config.ts`,
-                                                        content: `import { defineConfig } from 'vite'; import react from '@vitejs/plugin-react'; export default defineConfig({ plugins: [react()] });`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/postcss.config.js`,
-                                                        content: `export default { plugins: { tailwindcss: {}, autoprefixer: {}, }, }`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/tailwind.config.js`,
-                                                        content: `/** @type {import('tailwindcss').Config} */\nexport default {\n  content: [\n    "./index.html",\n    "./src/**/*.{js,ts,jsx,tsx}",\n  ],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n}`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/index.html`,
-                                                        content: `<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Generated App</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/src/main.tsx`,
-                                                        content: `import React from 'react'; import ReactDOM from 'react-dom/client'; import App from './App.tsx'; import './index.css'; ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>,);`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/src/App.tsx`,
-                                                        content: `import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { useState } from 'react';
-
-function Home() {
-  return (
-    <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4">
-      <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent mb-4">
-        Generated App Running! 🚀
-      </h1>
-      <p className="text-zinc-400 max-w-md text-center">
-        The agents are currently building your application components.
-        As tasks complete, new routes will appear here.
-      </p>
-      <div className="mt-8 p-4 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-500">
-        Waiting for active tasks...
-      </div>
-    </div>
-  );
-}
-
-function App() { 
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-      </Routes>
-    </BrowserRouter>
-  ); 
-} 
-
-export default App;`
-                                                    },
-                                                    {
-                                                        path: `${rootPath}/src/index.css`,
-                                                        content: `@tailwind base; @tailwind components; @tailwind utilities; body { font-family: system-ui; background: #09090b; color: #fff; }`
-                                                    }
-                                                ];
-
-                                                for (const file of boilerplate) {
-                                                    window.ipcRenderer.invoke('fs:writeFile', file.path, file.content);
-                                                }
-
-                                                filePath = `${rootPath}/README.md`; // Fallback for the loop below
-                                                // -------------------------------
-                                            } else if (task.title.includes('Database')) {
-                                                filePath = `${rootPath}/db/schema.sql`;
-                                            } else {
-                                                filePath = `${rootPath}/docs/${sanitizedTitle}.md`;
-                                            }
-
-                                            // Trigger write (for the main file)
-                                            if (filePath) {
-                                                window.ipcRenderer.invoke('fs:writeFile', filePath, fileContent)
-                                                    .then(() => agent.logs.push(`Wrote file: ${filePath}`))
-                                                    .catch(err => agent.logs.push(`Failed to write file: ${err}`));
-                                            }
-                                        }
-                                        // ---------------------------
-                                    }
-                                }
-                            }
+                    // Try LLM skill execution
+                    const { skillRunning, projectIdea } = get();
+                    if (!skillRunning.has(task.id)) {
+                        skillRunning.add(task.id);
+                        const skill = getSkill(task.type);
+                        if (skill) {
+                            skill.execute({
+                                taskTitle: task.title,
+                                taskDescription: task.description,
+                                projectName: projectIdea,
+                            })
+                                .then(output => {
+                                    get().completeTaskExecution(task.id, agent.name, output.files, output.summary);
+                                })
+                                .catch(err => {
+                                    console.error(`Skill failed for "${task.title}":`, err);
+                                    skillRunning.delete(task.id);
+                                });
+                        } else {
+                            // Fast fake progress — complete in 3-5 ticks
+                            const speed = (agent.capability || 5) / (task.complexity || 5);
+                            const increment = Math.round(Math.max(15, speed * 25));
+                            task.progress = Math.min(100, (task.progress || 0) + increment);
                         }
                     }
 
-                    // Handle Review Progress (Architect)
-                    if (task.status === 'review' && task.assignedTo) {
-                        const agent = newAgents.find(a => a.id === task.assignedTo);
-                        if (agent && agent.role === 'Architect') {
-                            agent.status = 'working';
-                            if (!agent.currentTaskId) agent.currentTaskId = task.id;
+                    // Completion: straight to done (no review/QA gating)
+                    if (task.progress >= 100) {
+                        task.status = 'done';
+                        task.progress = 100;
+                        task.currentActivity = undefined;
+                        task.history.push({ status: 'done', timestamp: Date.now(), by: agent.name });
+                        agent.logs.push(`Completed: ${task.title}`);
+                        agent.currentTaskId = undefined;
+                        agent.status = 'idle';
 
-                            // Review happens faster
-                            task.progress = Math.min(100, (task.progress || 0) + 20);
+                        task.output = `Implemented by ${agent.name}`;
+                        task.outputHistory.push({
+                            author: agent.name,
+                            content: `Implemented: ${task.title}`,
+                            timestamp: Date.now(),
+                        });
 
-                            if (task.progress >= 100) {
-                                const approved = Math.random() > 0.1; // 90% Architect approval rate
-                                if (approved) {
-                                    // Move to QA
-                                    task.status = 'testing';
-                                    task.progress = 0;
-                                    task.history.push({ status: 'testing', timestamp: Date.now(), by: agent.name });
-                                    task.assignedTo = undefined; // Unassign from Architect
-                                    agent.logs.push(`Approved Implementation: ${task.title} -> Moving to QA`);
-                                } else {
-                                    task.status = 'in-progress';
-                                    task.history.push({ status: 'in-progress', timestamp: Date.now(), by: agent.name });
-                                    task.comments.push({
-                                        author: agent.name,
-                                        text: "Code review failed. Please refactor.",
-                                        timestamp: Date.now()
-                                    });
-                                    if (task.originalAssigneeId) task.assignedTo = task.originalAssigneeId;
-                                    else task.assignedTo = undefined;
-                                    agent.logs.push(`Rejected task (Review): ${task.title}`);
-                                }
-                                agent.currentTaskId = undefined;
-                                agent.status = 'idle';
-                            }
-                        }
-                    }
+                        // Write files if in Electron
+                        const { rootPath } = get();
+                        if (rootPath && typeof window !== 'undefined' && (window as any).ipcRenderer) {
+                            const ipc = (window as any).ipcRenderer;
+                            let rawTitle = task.title.replace(/[^a-zA-Z0-9]/g, '');
+                            if (!rawTitle) rawTitle = 'Untitled';
+                            const name = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
 
-                    // 4. QA Phase (QA Engineer)
-                    const qaEngineer = newAgents.find(a => a.role === 'QA Engineer');
-                    if (qaEngineer) {
-                        // Assign Testing Tasks
-                        if (qaEngineer.status === 'idle') {
-                            const testingTask = newTasks.find(t => t.status === 'testing' && !t.assignedTo);
-                            if (testingTask) {
-                                testingTask.assignedTo = qaEngineer.id;
-                                testingTask.progress = 5;
-                                qaEngineer.status = 'working';
-                                qaEngineer.currentTaskId = testingTask.id;
-                                qaEngineer.logs.push(`Started Testing: ${testingTask.title}`);
-                            }
-                        }
-
-                        // Process Testing
-                        const currentQaTask = newTasks.find(t => t.assignedTo === qaEngineer.id && t.status === 'testing');
-                        if (currentQaTask && qaEngineer.status === 'working') {
-                            // Work on testing
-                            currentQaTask.progress = Math.min(100, (currentQaTask.progress || 0) + 15); // Testing is relatively fast
-
-                            if (currentQaTask.progress >= 100) {
-                                const passed = Math.random() > 0.1; // 90% QA Pass rate
-                                if (passed) {
-                                    currentQaTask.status = 'done';
-                                    currentQaTask.history.push({ status: 'done', timestamp: Date.now(), by: qaEngineer.name });
-                                    qaEngineer.logs.push(`QA Passed ✅: ${currentQaTask.title}`);
-                                } else {
-                                    currentQaTask.status = 'in-progress'; // Send back to dev
-                                    currentQaTask.history.push({ status: 'in-progress', timestamp: Date.now(), by: qaEngineer.name });
-                                    currentQaTask.comments.push({
-                                        author: qaEngineer.name,
-                                        text: "QA Failed: Bugs found in integration test.",
-                                        timestamp: Date.now()
-                                    });
-                                    // Assign back to original dev if possible
-                                    if (currentQaTask.originalAssigneeId) {
-                                        currentQaTask.assignedTo = currentQaTask.originalAssigneeId;
-                                    } else {
-                                        currentQaTask.assignedTo = undefined;
-                                    }
-                                    qaEngineer.logs.push(`QA Failed ❌: ${currentQaTask.title}`);
-                                }
-                                qaEngineer.currentTaskId = undefined;
-                                qaEngineer.status = 'idle';
-                            }
+                            const pathMap: Record<string, string> = {
+                                frontend: `${rootPath}/src/components/${name}.tsx`,
+                                backend: `${rootPath}/src/services/${name}.ts`,
+                                api: `${rootPath}/src/routes/${name}.ts`,
+                                database: `${rootPath}/db/${name}.sql`,
+                                test: `${rootPath}/src/__tests__/${name}.test.ts`,
+                                setup: `${rootPath}/src/config/${name}.ts`,
+                                devops: `${rootPath}/infra/${name}.yml`,
+                                architecture: `${rootPath}/docs/${name}.md`,
+                            };
+                            const filePath = pathMap[task.type ?? 'backend'] ?? `${rootPath}/src/${name}.ts`;
+                            ipc.invoke('fs:writeFile', filePath, `// ${task.title}\n// Generated by ${agent.name}\n`)
+                                .catch(() => { /* ignore write errors */ });
                         }
                     }
                 });
 
-                // 3. Assign Review Tasks to Architect (if idle or parallel)
-                // We allow Architect to review multiple things if we want, but typically review is sequential.
-                // However, user said "Every task... parallel". So let's assign ALL unassigned review tasks to Architect if available.
-                const architect = newAgents.find(a => a.role === 'Architect');
-                if (architect) {
-                    newTasks.forEach(t => {
-                        if (t.status === 'review' && !t.assignedTo) {
-                            t.assignedTo = architect.id;
-                            t.progress = 0; // Start review
-                            architect.logs.push(`Started reviewing: ${t.title}`);
-                        }
-                    });
+                // 3. Check completion
+                const allDone = newTasks.length > 0 && newTasks.every(t => t.status === 'done');
+                if (allDone && newPhase === 'development') {
+                    newPhase = 'completed' as any;
+                    set({ showCelebration: true });
                 }
 
-                // Auto-save current project state to projects array
+                // 4. Auto-save project state
                 let updatedProjects = [...projects];
                 if (activeProjectId) {
-                    const currentProjectIndex = updatedProjects.findIndex(p => p.id === activeProjectId);
-                    if (currentProjectIndex >= 0) {
-                        updatedProjects[currentProjectIndex] = {
-                            ...updatedProjects[currentProjectIndex],
+                    const idx = updatedProjects.findIndex(p => p.id === activeProjectId);
+                    if (idx >= 0) {
+                        updatedProjects[idx] = {
+                            ...updatedProjects[idx],
                             phase: newPhase,
                             agents: newAgents,
                             tasks: newTasks,
                             epics: get().epics,
                             stories: get().stories,
-                            lastActive: Date.now()
+                            lastActive: Date.now(),
                         };
                     }
                 }

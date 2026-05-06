@@ -339,7 +339,14 @@ const TaskBoardView = () => {
                                                                             <div className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${task.complexity >= 8 ? 'bg-red-500' : task.complexity >= 5 ? 'bg-yellow-500' : 'bg-green-500'}`} title={`Complexity: ${task.complexity}`} />
                                                                         </div>
 
-                                                                        <h4 className="font-medium text-sm text-zinc-100 mb-3 leading-snug group-hover:text-primary transition-colors relative z-10 line-clamp-2">{task.title}</h4>
+                                                                        <h4 className="font-medium text-sm text-zinc-100 mb-1.5 leading-snug group-hover:text-primary transition-colors relative z-10 line-clamp-2">{task.title}</h4>
+
+                                                                        {task.status === 'in-progress' && task.currentActivity && (
+                                                                            <p className="text-[10px] text-blue-400/80 mb-2.5 relative z-10 flex items-center gap-1.5 truncate">
+                                                                                <span className="w-1 h-1 rounded-full bg-blue-400 animate-pulse shrink-0" />
+                                                                                {task.currentActivity}
+                                                                            </p>
+                                                                        )}
 
                                                                         <div className="flex items-center justify-between relative z-10 gap-2">
                                                                             {assignedAgent ? (
