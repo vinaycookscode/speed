@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import fs from 'node:fs/promises'
-
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import Anthropic from '@anthropic-ai/sdk'
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -70,6 +70,77 @@ app.whenReady().then(() => {
   createWindow()
 
   // IPC Handlers
+
+  // ── Claude API via Node.js main process ─────────────────────────────────────
+  // Chromium's SSE implementation drops content_block_delta events on long streams.
+  // Running the call here (Node.js) + forwarding progress via webContents.send() fixes it.
+  ipcMain.handle('claude:generatePlan', async (_event, { apiKey, systemPrompt, userMessage, toolSchema }: {
+    apiKey: string
+    systemPrompt: string
+    userMessage: string
+    toolSchema: any
+  }) => {
+    const send = (channel: string, ...args: any[]) => {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(channel, ...args)
+      }
+    }
+
+    console.log('[Main] claude:generatePlan — IPC received')
+    send('claude:planLog', 'IPC connected — calling Claude API…')
+    send('claude:planProgress', 0)
+
+    const client = new Anthropic({ apiKey })
+
+    try {
+      send('claude:planLog', 'Sending request to Claude…')
+      const stream = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+        max_tokens: 32000,
+        tools: [toolSchema],
+        tool_choice: { type: 'tool', name: 'output_plan' },
+        stream: true,
+      }, { headers: { 'anthropic-beta': 'output-128k-2025-02-19' } })
+
+      send('claude:planLog', 'Stream opened — waiting for first token…')
+      let jsonBuffer = ''
+      let inputTokens = 0
+      let outputTokens = 0
+
+      for await (const event of stream) {
+        if (event.type === 'message_start') {
+          inputTokens = event.message?.usage?.input_tokens ?? 0
+          send('claude:planLog', `Generating… (${inputTokens} input tokens)`)
+          send('claude:planProgress', 1)
+        } else if (
+          event.type === 'content_block_delta' &&
+          (event.delta as any)?.type === 'input_json_delta'
+        ) {
+          jsonBuffer += (event.delta as any).partial_json
+          send('claude:planProgress', jsonBuffer.length)
+        } else if (event.type === 'message_delta') {
+          outputTokens = (event.usage as any)?.output_tokens ?? outputTokens
+        } else if (event.type === 'message_stop') {
+          console.log(`[Main] Stream done — ${jsonBuffer.length} bytes, ${outputTokens} output tokens`)
+          send('claude:planLog', `Done — ${outputTokens} output tokens`)
+        }
+      }
+
+      if (!jsonBuffer) {
+        return { success: false, error: 'Stream produced no JSON output.' }
+      }
+
+      const parsed = JSON.parse(jsonBuffer)
+      return { success: true, epics: parsed.epics, inputTokens, outputTokens }
+    } catch (err: any) {
+      const msg = err?.message ?? String(err)
+      console.error('[Main] claude:generatePlan error:', msg)
+      send('claude:planLog', `ERROR: ${msg}`)
+      return { success: false, error: msg }
+    }
+  })
 
   ipcMain.handle('dialog:openDirectory', async () => {
     console.log('[Main] dialog:openDirectory invoked');

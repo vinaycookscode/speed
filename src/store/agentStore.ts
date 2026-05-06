@@ -126,6 +126,17 @@ interface AgentStore {
     setPmProgress: (charsReceived: number, chunk: string) => void;
     clearPmProgress: () => void;
 
+    // PM epic-level status (parallel phase 2)
+    planningEpics: {
+        id: string;
+        title: string;
+        description: string;
+        status: 'pending' | 'working' | 'done' | 'error';
+        taskCount?: number;
+    }[];
+    upsertPlanningEpic: (id: string, title: string, description: string, status: 'pending' | 'working' | 'done' | 'error', taskCount?: number) => void;
+    clearPlanningEpics: () => void;
+
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
     removeToast: (id: string) => void;
 
@@ -163,6 +174,7 @@ export const useAgentStore = create<AgentStore>()(
             showCelebration: false,
             projects: [],
             pmProgress: null,
+            planningEpics: [],
 
             deployment: {
                 status: 'idle',
@@ -394,27 +406,32 @@ export const useAgentStore = create<AgentStore>()(
                     set((state) => {
                         const updatedPm = state.agents.find(a => a.id === pm.id);
                         if (updatedPm && updatedPm.status === 'working') {
-                            console.warn('PM Agent: Generation timed out after 120s.');
+                            console.warn('PM Agent: Generation timed out after 600s.');
                             return {
                                 agents: state.agents.map(a => a.id === pm.id
-                                    ? { ...a, status: 'error', logs: [...a.logs, 'Error: PM Analysis timed out (240s). Check your API key and network.'] }
+                                    ? { ...a, status: 'error', logs: [...a.logs, 'Error: PM Analysis timed out (10 min). Check your API key and network.'] }
                                     : a
                                 )
                             };
                         }
                         return {};
                     });
-                }, 240000); // 240s: Phase 1 analysis (~15s) + Phase 2 streaming (~90s) + buffer
+                }, 600000); // 600s (10 min): full plans can be 50K+ tokens at ~150 tok/s = 5-8 min
+
+                get().clearPlanningEpics();
 
                 (async () => {
                     try {
                         const pmAgent = new ProductManagerAgent();
                         const plan = await pmAgent.generatePlan(
                             projectIdea,
-                            (charsReceived, chunk) => get().setPmProgress(charsReceived, chunk)
+                            (charsReceived, chunk) => get().setPmProgress(charsReceived, chunk),
+                            (id, title, description, status, taskCount) =>
+                                get().upsertPlanningEpic(id, title, description, status, taskCount)
                         );
                         clearTimeout(timeoutId);
                         get().clearPmProgress();
+                        get().clearPlanningEpics();
 
                         set((state) => {
                             const updatedPm = state.agents.find(a => a.id === pm.id);
@@ -423,7 +440,7 @@ export const useAgentStore = create<AgentStore>()(
                                 : [];
                             console.log(`PM Agent: Plan ready — ${plan.epics.length} epics, ${plan.stories.length} stories, ${plan.tasks.length} tasks`);
                             return {
-                                phase: 'approval',  // immediately move to backlog — don't wait for tick()
+                                phase: 'approval',
                                 epics: [...state.epics, ...plan.epics],
                                 stories: [...state.stories, ...plan.stories],
                                 tasks: [...state.tasks, ...plan.tasks],
@@ -470,6 +487,19 @@ export const useAgentStore = create<AgentStore>()(
             }),
 
             clearPmProgress: () => set({ pmProgress: null }),
+
+            upsertPlanningEpic: (id, title, description, status, taskCount) => set(state => {
+                const existing = state.planningEpics.findIndex(e => e.id === id);
+                const entry = { id, title, description, status, taskCount };
+                if (existing >= 0) {
+                    const updated = [...state.planningEpics];
+                    updated[existing] = entry;
+                    return { planningEpics: updated };
+                }
+                return { planningEpics: [...state.planningEpics, entry] };
+            }),
+
+            clearPlanningEpics: () => set({ planningEpics: [] }),
             tick: () => {
                 const { agents, tasks, phase, activeProjectId, projects } = get();
                 let newAgents = [...agents];
@@ -1249,6 +1279,17 @@ export default App;`
                 projectIdea: state.projectIdea,
                 rootPath: state.rootPath
             }),
+            onRehydrateStorage: () => (state) => {
+                if (!state) return;
+                // Reset any stale 'working'/'error' agent statuses from a previous session
+                // so the planning screen never shows on startup unexpectedly.
+                state.agents = state.agents.map(a =>
+                    a.status === 'working' || a.status === 'error'
+                        ? { ...a, status: 'idle', currentTaskId: undefined }
+                        : a
+                );
+                state.pmProgress = null;
+            },
         }
     )
 );

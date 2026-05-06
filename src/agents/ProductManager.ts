@@ -1,15 +1,31 @@
 import { createLLMClient, resolveBestProvider } from '../lib/llm';
-import type { ClaudeClient } from '../lib/llm/claude';
 import type { ToolDefinition } from '../lib/llm/types';
 import { v4 as uuidv4 } from 'uuid';
 import type { Task, Epic, Story, Role } from '../store/agentStore';
 
 export type PlanningProgressCallback = (charsReceived: number, rawChunk: string) => void;
 
+export type EpicStatusCallback = (
+    epicId: string,
+    title: string,
+    description: string,
+    status: 'pending' | 'working' | 'done' | 'error',
+    taskCount?: number
+) => void;
+
 export interface PlanningOutput {
     epics: Epic[];
     stories: Story[];
     tasks: Task[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RawStory {
+    storyTitle: string;
+    tasks: RawTask[];
 }
 
 interface RawTask {
@@ -22,11 +38,6 @@ interface RawTask {
     dependsOn?: string[];
 }
 
-interface RawStory {
-    storyTitle: string;
-    tasks: RawTask[];
-}
-
 interface RawEpic {
     epicTitle: string;
     epicDescription: string;
@@ -34,60 +45,52 @@ interface RawEpic {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TOOL SCHEMA
+// TOOL SCHEMA — single call, compact output
 // ─────────────────────────────────────────────────────────────────────────────
 
 const OUTPUT_PLAN_TOOL: ToolDefinition = {
     name: 'output_plan',
-    description: 'Output the complete project execution plan as structured data. Call this tool once with the full plan.',
+    description: 'Output the complete project execution plan.',
     parameters: {
         properties: {
             epics: {
                 type: 'array',
-                description: '8-12 epics covering all relevant domains',
                 items: {
                     type: 'object',
                     required: ['epicTitle', 'epicDescription', 'stories'],
                     properties: {
-                        epicTitle: { type: 'string', description: 'Short domain name, e.g. "Authentication & Authorization"' },
-                        epicDescription: { type: 'string', description: '2-3 sentence explanation of what this epic covers and why it matters' },
+                        epicTitle: { type: 'string' },
+                        epicDescription: { type: 'string' },
                         stories: {
                             type: 'array',
-                            description: '3-5 user stories per epic',
                             items: {
                                 type: 'object',
                                 required: ['storyTitle', 'tasks'],
                                 properties: {
-                                    storyTitle: { type: 'string', description: 'User story format: As a [persona], I can [action] so that [benefit]' },
+                                    storyTitle: { type: 'string' },
                                     tasks: {
                                         type: 'array',
-                                        description: '3-6 atomic tasks per story',
                                         items: {
                                             type: 'object',
                                             required: ['title', 'description', 'type', 'complexity', 'assignableTo'],
                                             properties: {
-                                                title: { type: 'string', description: 'Verb + specific noun, e.g. "Create users migration 001_create_users.sql"' },
-                                                description: { type: 'string', description: 'Full technical specification — minimum 10 lines with all implementation details' },
+                                                title: { type: 'string' },
+                                                description: { type: 'string' },
                                                 type: {
                                                     type: 'string',
                                                     enum: ['setup', 'architecture', 'database', 'backend', 'api', 'frontend', 'test', 'devops'],
                                                 },
-                                                complexity: { type: 'number', minimum: 1, maximum: 10 },
+                                                complexity: { type: 'number' },
                                                 assignableTo: {
                                                     type: 'array',
-                                                    items: {
-                                                        type: 'string',
-                                                        enum: ['Architect', 'Tech Lead', 'Software Engineer', 'Backend Engineer', 'QA Engineer', 'DevOps Engineer'],
-                                                    },
+                                                    items: { type: 'string' },
                                                 },
                                                 acceptanceCriteria: {
                                                     type: 'array',
-                                                    description: 'Minimum 3 binary pass/fail conditions',
                                                     items: { type: 'string' },
                                                 },
                                                 dependsOn: {
                                                     type: 'array',
-                                                    description: 'Exact titles of tasks that must complete before this one starts',
                                                     items: { type: 'string' },
                                                 },
                                             },
@@ -105,179 +108,204 @@ const OUTPUT_PLAN_TOOL: ToolDefinition = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYSTEM PROMPT
+// SYSTEM PROMPT — optimised for speed: concise specs, no bloat
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `
-You are a Staff Product Manager and Engineering Lead with 15+ years shipping production SaaS products. You understand both product strategy and deep technical implementation.
+const SYSTEM_PROMPT = `You are a Staff PM and Engineering Lead. Given a project idea, call output_plan with a full execution plan.
 
-Given a project idea, you will:
-1. THINK deeply about what this product truly needs (not just what was stated)
-2. Call the \`output_plan\` tool with a comprehensive execution plan that AI engineering agents can implement without any clarification
+EPIC COVERAGE (include all applicable):
+1. Project Setup (repo, stack, env, base structure)
+2. Database Design (all tables, migrations)
+3. Auth (register, login, JWT, RBAC)
+4. 2-4 Core Product Epics (the main features)
+5. Testing Suite
+6. DevOps & Deployment
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TASK DESCRIPTION RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-DATABASE tasks must specify:
-- Migration filename (e.g. 003_create_orders.sql)
-- Full CREATE TABLE with every column: name, type, constraints, default
-- All indexes including compound ones for common queries
-- Foreign keys with ON DELETE/ON UPDATE behaviour
-- Any check constraints or triggers
-
-BACKEND / SERVICE tasks must specify:
-- File path (e.g. src/services/OrderService.ts)
-- Class name + all methods with typed params and return types
-- Step-by-step business logic (numbered)
-- Error cases and what is thrown
-- Caching strategy if applicable (what, TTL, invalidation)
-
-API / ENDPOINT tasks must specify:
-- HTTP method + full URL (e.g. POST /api/v1/orders)
-- Middleware chain in order (auth → validate → handler)
-- Complete request schema: all fields with types, required/optional, validation
-- All response shapes: HTTP code + JSON body for success AND every error case
-- Side effects: emails, queue jobs, events, cache invalidation
-- Rate limit if applicable
-
-FRONTEND tasks must specify:
-- File path (e.g. src/pages/orders/OrderDetailPage.tsx)
-- Props interface
-- All state variables with types and initial values
-- Every API call: endpoint, trigger condition, loading/error/success UI states
-- Form fields (if any): validation rules, error messages
-- Navigation: where the user goes after each action
-- Mobile vs desktop layout differences
-
-TEST tasks must specify:
-- File path + framework (e.g. src/__tests__/OrderService.test.ts — Vitest)
-- All mocks needed
-- Every test case by name: input → expected output
-- Edge cases: invalid inputs, concurrent calls, boundary values
-- Coverage target (%)
-
-DEVOPS / SETUP tasks must specify:
-- Exact commands to run
-- All files created with intended content structure
-- Every env variable: key name, example value, required/optional
-- package.json changes (scripts, deps)
-
-DEPENDENCIES (dependsOn field):
-- List exact titles of tasks that must complete before this one starts
-- Cross-story and cross-epic dependencies are valid
-- Always order tasks within a story: database → backend → api → frontend → test
-- Example: a backend service task should dependsOn the migration task that creates its tables
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EPIC COVERAGE — generate ALL applicable
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Always include:
-1. Project Setup & Architecture (repo, tech stack, env config, base structure, DB connection)
-2. Database Design (ALL tables — users, sessions, domain entities, audit logs, etc.)
-3. Authentication & Authorization (register, login, JWT+refresh, password reset, RBAC)
-4. [3-6 Core Product Epics specific to the idea — cover main features in detail]
-5. Admin / Management Panel (user management, content moderation — if applicable)
-6. Notifications (email templates via Resend/SendGrid + in-app notification center)
-7. Search & Filtering (if the product has lists of content or data)
-8. File & Media Handling (if uploads/images are needed)
-9. Analytics & Reporting (key metrics dashboard, data exports)
-10. Payments & Billing (Stripe integration, webhooks, billing portal — if applicable)
-11. Testing Suite (unit + integration + e2e: setup, key scenarios, CI integration)
-12. DevOps & Deployment (Docker, GitHub Actions, staging + production environments)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-QUANTITY & QUALITY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- 8-12 epics covering all relevant domains
-- 3-5 stories per epic
-- 3-6 tasks per story — each atomic (one engineer, one session)
-- Descriptions: minimum 10 lines per task. Be specific, not generic.
-- acceptanceCriteria: minimum 3 binary pass/fail conditions per task
-- Task ordering per story: database → backend → api → frontend → test
-- complexity: 1=config, 3=simple CRUD, 5=standard endpoint, 7=complex service, 9=distributed
-- assignableTo values ONLY: "Architect" | "Tech Lead" | "Software Engineer" | "Backend Engineer" | "QA Engineer" | "DevOps Engineer"
-- Never write generic task titles like "Implement X feature" — always name the exact file, endpoint, or component
-`;
+RULES:
+- 6-8 epics, 2-3 stories each, 2-4 tasks per story
+- Task titles: verb + specific noun (e.g. "Create users table migration")
+- Task description: 3-4 lines — file path, key implementation details, error handling
+- acceptanceCriteria: 2-3 pass/fail conditions per task
+- dependsOn: exact titles of prerequisite tasks
+- Order within story: database → backend → api → frontend → test
+- type: one of setup|architecture|database|backend|api|frontend|test|devops
+- assignableTo: Architect|Tech Lead|Software Engineer|Backend Engineer|QA Engineer|DevOps Engineer
+- Be specific, not generic. Name files, endpoints, components.
+- Keep it concise — quality over quantity.`.trim();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class ProductManagerAgent {
-    public async generatePlan(
+    async generatePlan(
         projectIdea: string,
-        onProgress?: PlanningProgressCallback
+        onProgress?: PlanningProgressCallback,
+        onEpicStatus?: EpicStatusCallback
     ): Promise<PlanningOutput> {
         const resolved = resolveBestProvider();
         if (!resolved) {
-            throw new Error(
-                'No LLM API key configured. Add VITE_ANTHROPIC_API_KEY or VITE_GEMINI_API_KEY to your .env file.'
-            );
+            throw new Error('No LLM API key configured. Add VITE_ANTHROPIC_API_KEY to your .env file.');
         }
 
         const client = createLLMClient(resolved);
         console.log(`PM Agent: Using provider "${resolved.provider}" (${client.model})`);
 
-        const userMessage = `
-Project idea: "${projectIdea}"
+        const userMessage = `Project idea: "${projectIdea}"
 
-Before calling output_plan, think through:
-- Who are all the user types? (end users, admins, guests, etc.)
-- What are all the data entities this product needs?
-- What third-party integrations does this require? (payments, email, storage, auth, etc.)
-- What features does this product IMPLICITLY need that the user didn't mention? (auth, notifications, admin panel, onboarding, settings, etc.)
-- What are the security concerns? (rate limiting, input validation, CSRF, etc.)
-
-Now call output_plan with the complete Epic → Story → Task execution plan. Be exhaustive — this plan will be executed by AI agents with zero human intervention.
-`.trim();
+Think about: user types, data entities, integrations, implicit features (auth, notifications, admin).
+Then call output_plan with the full plan.`;
 
         const request = {
             systemPrompt: SYSTEM_PROMPT,
             userMessage,
-            options: { temperature: 0.2, maxTokens: 20000 },
+            options: { temperature: 0.2, maxTokens: 16000 },
         };
 
-        // ── Claude path: tool_use streaming (no JSON parsing needed) ──────────
         if (resolved.provider === 'claude') {
-            const claudeClient = client as ClaudeClient;
+            return this.generateWithClaude(client, request, resolved.apiKey, onProgress, onEpicStatus);
+        }
 
-            try {
-                let rawEpics: RawEpic[];
+        // Gemini fallback
+        return this.generateWithGemini(client, request, onProgress);
+    }
 
-                if (onProgress) {
-                    console.log('PM Agent: Using tool_use streaming (Claude)');
-                    const toolResponse = await claudeClient.generateWithToolsStreaming(
-                        request,
-                        [OUTPUT_PLAN_TOOL],
-                        'output_plan',
-                        (bytes: number) => onProgress(bytes, '')
-                    );
-                    rawEpics = (toolResponse.toolCalls[0]?.arguments as any)?.epics as RawEpic[];
-                } else {
-                    console.log('PM Agent: Using tool_use non-streaming (Claude)');
-                    const toolResponse = await claudeClient.generateWithTools(
-                        request,
-                        [OUTPUT_PLAN_TOOL],
-                        'output_plan'
-                    );
-                    rawEpics = (toolResponse.toolCalls[0]?.arguments as any)?.epics as RawEpic[];
-                }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Claude: single call, progressive epic reveal
+    // ─────────────────────────────────────────────────────────────────────────
 
-                if (!Array.isArray(rawEpics) || rawEpics.length === 0) {
-                    throw new Error('PM Agent: Tool call returned empty or invalid plan.');
-                }
+    private async generateWithClaude(
+        client: any,
+        request: any,
+        apiKey: string,
+        onProgress?: PlanningProgressCallback,
+        onEpicStatus?: EpicStatusCallback
+    ): Promise<PlanningOutput> {
+        const ipc = typeof window !== 'undefined' ? (window as any).ipcRenderer : null;
 
-                console.log(`PM Agent: Tool use succeeded — ${rawEpics.length} epics`);
-                return this.transformToStoreTypes(rawEpics);
-            } catch (err: any) {
-                console.error('PM Agent: Claude tool_use failed:', err?.message ?? err);
-                throw err;
+        let rawEpics: RawEpic[];
+
+        if (ipc) {
+            // ── Electron: IPC → Node.js main process (streaming works in Node) ──
+            rawEpics = await this.callViaIPC(ipc, apiKey, request, onProgress);
+        } else {
+            // ── Chrome: non-streaming POST (no SSE = no HTTP/2 issues) ──
+            rawEpics = await this.callNonStreaming(client, request, onProgress);
+        }
+
+        // ── Progressive epic reveal ──────────────────────────────────────────
+        // The call is done — now reveal epics one by one for a smooth animation
+        const output = this.transformToStoreTypes(rawEpics);
+
+        if (onEpicStatus) {
+            for (const epic of output.epics) {
+                const taskCount = output.tasks.filter(t => t.epicId === epic.id).length;
+                onEpicStatus(epic.id, epic.title, epic.description, 'done', taskCount);
+                // Small delay between reveals for animation
+                await new Promise(r => setTimeout(r, 150));
             }
         }
 
-        // ── Gemini / fallback path: text streaming + JSON parse with auto-retry ─
+        return output;
+    }
+
+    // ── Electron IPC path (streaming in Node.js) ─────────────────────────────
+
+    private async callViaIPC(
+        ipc: any,
+        apiKey: string,
+        request: any,
+        onProgress?: PlanningProgressCallback
+    ): Promise<RawEpic[]> {
+        console.log('[PM Agent] Electron — routing through IPC');
+
+        let simBytes = 0;
+        const heartbeat = setInterval(() => {
+            simBytes = Math.min(simBytes + 200, 2000);
+            onProgress?.(simBytes, '');
+        }, 1500);
+
+        const progressHandler = (_: any, bytes: number) => {
+            if (bytes > 0) {
+                clearInterval(heartbeat);
+                onProgress?.(bytes, '');
+            }
+        };
+        const logHandler = (_: any, msg: string) => console.log(`[Main] ${msg}`);
+        ipc.on('claude:planProgress', progressHandler);
+        ipc.on('claude:planLog', logHandler);
+
+        try {
+            const result = await ipc.invoke('claude:generatePlan', {
+                apiKey,
+                systemPrompt: request.systemPrompt,
+                userMessage: request.userMessage,
+                toolSchema: {
+                    name: OUTPUT_PLAN_TOOL.name,
+                    description: OUTPUT_PLAN_TOOL.description,
+                    input_schema: { type: 'object', ...OUTPUT_PLAN_TOOL.parameters },
+                },
+            });
+
+            if (!result.success) throw new Error(result.error ?? 'IPC returned failure');
+            const epics = result.epics as RawEpic[];
+            if (!Array.isArray(epics) || epics.length === 0) throw new Error('Plan returned 0 epics.');
+            console.log(`[PM Agent] ${epics.length} epics via IPC`);
+            return epics;
+        } finally {
+            clearInterval(heartbeat);
+            ipc.off('claude:planProgress', progressHandler);
+            ipc.off('claude:planLog', logHandler);
+        }
+    }
+
+    // ── Chrome non-streaming path (regular POST, no SSE) ─────────────────────
+
+    private async callNonStreaming(
+        client: any,
+        request: any,
+        onProgress?: PlanningProgressCallback
+    ): Promise<RawEpic[]> {
+        console.log('[PM Agent] Chrome — non-streaming generateWithTools');
+
+        let simBytes = 0;
+        const heartbeat = setInterval(() => {
+            simBytes = Math.min(simBytes + 300, 20000);
+            onProgress?.(simBytes, '');
+        }, 1000);
+
+        try {
+            const toolResponse = await client.generateWithTools(
+                request,
+                [OUTPUT_PLAN_TOOL],
+                'output_plan'
+            );
+
+            if (toolResponse.finishReason === 'length') {
+                throw new Error('Plan truncated — try a shorter project description.');
+            }
+
+            const rawEpics = (toolResponse.toolCalls[0]?.arguments as any)?.epics as RawEpic[];
+            if (!Array.isArray(rawEpics) || rawEpics.length === 0) {
+                throw new Error('No epics returned from plan.');
+            }
+
+            console.log(`[PM Agent] ${rawEpics.length} epics via non-streaming`);
+            return rawEpics;
+        } finally {
+            clearInterval(heartbeat);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Gemini: text-based fallback
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private async generateWithGemini(
+        client: any,
+        request: any,
+        onProgress?: PlanningProgressCallback
+    ): Promise<PlanningOutput> {
         const MAX_ATTEMPTS = 2;
         let lastError: Error | null = null;
 
@@ -286,33 +314,25 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
                 const attemptRequest = attempt === 1 ? request : {
                     ...request,
                     options: { ...request.options, temperature: 0 },
-                    userMessage: request.userMessage +
-                        '\n\nCRITICAL: Your previous response could not be parsed as valid JSON. This attempt MUST produce only a valid JSON array. Use \\n for newlines inside strings. Never use literal line breaks inside a JSON string value.',
+                    userMessage: request.userMessage + '\n\nCRITICAL: Output ONLY valid JSON.',
                 };
 
-                const hasStreaming =
-                    onProgress &&
-                    attempt === 1 &&
-                    'generateStreaming' in client &&
-                    typeof (client as any).generateStreaming === 'function';
-
                 let response;
-                if (hasStreaming) {
-                    response = await (client as any).generateStreaming(
+                if (attempt === 1 && typeof client.generateStreaming === 'function') {
+                    response = await client.generateStreaming(
                         attemptRequest,
-                        (chunk: string, total: number) => onProgress!(total, chunk)
+                        (chunk: string, total: number) => onProgress?.(total, chunk)
                     );
                 } else {
                     response = await client.generate(attemptRequest);
                 }
 
                 if (!response?.content) throw new Error('LLM returned an empty response.');
-                console.log('PM Agent: LLM responded —', response.content.length, 'chars');
-                return this.parseAndTransform(response.content);
+                return this.parseAndTransformGemini(response.content);
             } catch (err: any) {
                 lastError = err;
                 if (attempt < MAX_ATTEMPTS) {
-                    console.warn(`PM Agent: Attempt ${attempt} failed (${err.message}), retrying at temperature=0…`);
+                    console.warn(`PM Agent: Attempt ${attempt} failed (${err.message}), retrying…`);
                 }
             }
         }
@@ -321,103 +341,7 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Parsing (Gemini / fallback path only)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private parseAndTransform(raw: string): PlanningOutput {
-        console.log('PM Agent: Parsing response —', raw.length, 'chars');
-
-        let jsonStr = raw.trim();
-
-        // 1. Strip markdown fences
-        jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-
-        // 2. Extract the outermost JSON array
-        const arrayStart = jsonStr.indexOf('[');
-        if (arrayStart === -1) throw new Error('PM Agent: No JSON array found in response.');
-        jsonStr = jsonStr.slice(arrayStart);
-
-        // 3. Sanitize control characters and trailing commas
-        jsonStr = this.sanitizeLLMJson(jsonStr);
-
-        // 4. Parse with truncation recovery fallback
-        let rawEpics: RawEpic[];
-        try {
-            rawEpics = JSON.parse(jsonStr);
-        } catch (firstErr: any) {
-            console.warn('PM Agent: Initial parse failed, attempting recovery…', firstErr.message);
-            try {
-                rawEpics = this.recoverTruncatedJson(jsonStr);
-            } catch (recoveryErr: any) {
-                throw new Error(`PM Agent: JSON parse failed and recovery unsuccessful. Original error: ${firstErr.message}`);
-            }
-        }
-
-        if (!Array.isArray(rawEpics) || rawEpics.length === 0) {
-            throw new Error('PM Agent: Parsed output is not a valid epic array.');
-        }
-
-        console.log(`PM Agent: Parsed ${rawEpics.length} epics`);
-        return this.transformToStoreTypes(rawEpics);
-    }
-
-    private sanitizeLLMJson(raw: string): string {
-        let result = '';
-        let inString = false;
-        let escaped = false;
-
-        for (let i = 0; i < raw.length; i++) {
-            const ch = raw[i];
-
-            if (escaped) { result += ch; escaped = false; continue; }
-            if (ch === '\\' && inString) { result += ch; escaped = true; continue; }
-            if (ch === '"') { inString = !inString; result += ch; continue; }
-
-            if (inString) {
-                if (ch === '\n') { result += '\\n'; continue; }
-                if (ch === '\r') { result += '\\r'; continue; }
-                if (ch === '\t') { result += '\\t'; continue; }
-                const code = ch.charCodeAt(0);
-                if (code < 0x20) { result += `\\u${code.toString(16).padStart(4, '0')}`; continue; }
-            }
-
-            result += ch;
-        }
-
-        result = result.replace(/,(\s*[}\]])/g, '$1');
-        return result;
-    }
-
-    private recoverTruncatedJson(jsonStr: string): RawEpic[] {
-        let depth = 0;
-        let lastGoodEnd = -1;
-        let inString = false;
-        let escaped = false;
-
-        for (let i = 0; i < jsonStr.length; i++) {
-            const ch = jsonStr[i];
-            if (escaped) { escaped = false; continue; }
-            if (ch === '\\' && inString) { escaped = true; continue; }
-            if (ch === '"') { inString = !inString; continue; }
-            if (inString) continue;
-            if (ch === '{') depth++;
-            else if (ch === '}') {
-                depth--;
-                if (depth === 0) lastGoodEnd = i;
-            }
-        }
-
-        if (lastGoodEnd === -1) throw new Error('Recovery failed — no complete epic object found.');
-
-        let recovered = jsonStr.slice(0, lastGoodEnd + 1).trimEnd();
-        if (recovered.endsWith(',')) recovered = recovered.slice(0, -1);
-        if (!recovered.startsWith('[')) recovered = '[' + recovered;
-
-        return JSON.parse(recovered + ']');
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Transform (both paths)
+    // Transform
     // ─────────────────────────────────────────────────────────────────────────
 
     private transformToStoreTypes(rawEpics: RawEpic[]): PlanningOutput {
@@ -427,7 +351,6 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
         const titleToId = new Map<string, string>();
         const dependencyRefs: { task: Task; dependsOn: string[] }[] = [];
 
-        // ── Pass 1: Build all entities, record dependency title refs ──────────
         for (const rawEpic of rawEpics) {
             const epicId = uuidv4();
             epics.push({
@@ -447,10 +370,9 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
                 for (const rawTask of rawStory.tasks ?? []) {
                     const id = uuidv4();
                     const criteria = rawTask.acceptanceCriteria ?? [];
-                    const criteriaBlock =
-                        criteria.length > 0
-                            ? `\n\nACCEPTANCE CRITERIA:\n${criteria.map(c => `  ${c}`).join('\n')}`
-                            : '';
+                    const criteriaBlock = criteria.length > 0
+                        ? `\n\nACCEPTANCE CRITERIA:\n${criteria.map(c => `  ${c}`).join('\n')}`
+                        : '';
 
                     const task: Task = {
                         id,
@@ -458,11 +380,10 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
                         description: (rawTask.description?.trim() || '') + criteriaBlock,
                         status: 'todo',
                         progress: 0,
-                        complexity:
-                            typeof rawTask.complexity === 'number'
-                                ? Math.min(10, Math.max(1, Math.round(rawTask.complexity)))
-                                : 5,
-                        dependencies: [], // resolved in pass 2
+                        complexity: typeof rawTask.complexity === 'number'
+                            ? Math.min(10, Math.max(1, Math.round(rawTask.complexity)))
+                            : 5,
+                        dependencies: [],
                         selected: true,
                         epicId,
                         storyId,
@@ -482,7 +403,7 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
             }
         }
 
-        // ── Pass 2: Resolve title references → UUIDs ──────────────────────────
+        // Resolve title-based dependencies → UUIDs
         let resolvedCount = 0;
         for (const { task, dependsOn } of dependencyRefs) {
             task.dependencies = dependsOn
@@ -492,9 +413,87 @@ Now call output_plan with the complete Epic → Story → Task execution plan. B
         }
 
         console.log(
-            `PM Agent: Plan ready — ${epics.length} epics, ${stories.length} stories, ${tasks.length} tasks, ${resolvedCount} dependency links`
+            `PM Agent: Plan ready — ${epics.length} epics, ${stories.length} stories, ` +
+            `${tasks.length} tasks, ${resolvedCount} deps`
         );
         return { epics, stories, tasks };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Gemini parsing helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private parseAndTransformGemini(raw: string): PlanningOutput {
+        let jsonStr = raw.trim()
+            .replace(/^```(?:json)?\s*/i, '')
+            .replace(/\s*```\s*$/, '')
+            .trim();
+
+        const arrayStart = jsonStr.indexOf('[');
+        if (arrayStart === -1) throw new Error('No JSON array found in response.');
+        jsonStr = jsonStr.slice(arrayStart);
+        jsonStr = this.sanitizeLLMJson(jsonStr);
+
+        let rawEpics: RawEpic[];
+        try {
+            rawEpics = JSON.parse(jsonStr);
+        } catch (firstErr: any) {
+            try {
+                rawEpics = this.recoverTruncatedJson(jsonStr);
+            } catch {
+                throw new Error(`JSON parse failed: ${firstErr.message}`);
+            }
+        }
+
+        if (!Array.isArray(rawEpics) || rawEpics.length === 0) {
+            throw new Error('Parsed output is not a valid epic array.');
+        }
+
+        return this.transformToStoreTypes(rawEpics);
+    }
+
+    private sanitizeLLMJson(raw: string): string {
+        let result = '';
+        let inString = false;
+        let escaped = false;
+
+        for (let i = 0; i < raw.length; i++) {
+            const ch = raw[i];
+            if (escaped) { result += ch; escaped = false; continue; }
+            if (ch === '\\' && inString) { result += ch; escaped = true; continue; }
+            if (ch === '"') { inString = !inString; result += ch; continue; }
+            if (inString) {
+                if (ch === '\n') { result += '\\n'; continue; }
+                if (ch === '\r') { result += '\\r'; continue; }
+                if (ch === '\t') { result += '\\t'; continue; }
+                const code = ch.charCodeAt(0);
+                if (code < 0x20) { result += `\\u${code.toString(16).padStart(4, '0')}`; continue; }
+            }
+            result += ch;
+        }
+
+        return result.replace(/,(\s*[}\]])/g, '$1');
+    }
+
+    private recoverTruncatedJson(jsonStr: string): RawEpic[] {
+        let depth = 0, lastGoodEnd = -1, inString = false, escaped = false;
+
+        for (let i = 0; i < jsonStr.length; i++) {
+            const ch = jsonStr[i];
+            if (escaped) { escaped = false; continue; }
+            if (ch === '\\' && inString) { escaped = true; continue; }
+            if (ch === '"') { inString = !inString; continue; }
+            if (inString) continue;
+            if (ch === '{') depth++;
+            else if (ch === '}') { depth--; if (depth === 0) lastGoodEnd = i; }
+        }
+
+        if (lastGoodEnd === -1) throw new Error('Recovery failed — no complete epic found.');
+
+        let recovered = jsonStr.slice(0, lastGoodEnd + 1).trimEnd();
+        if (recovered.endsWith(',')) recovered = recovered.slice(0, -1);
+        if (!recovered.startsWith('[')) recovered = '[' + recovered;
+        return JSON.parse(recovered + ']');
     }
 
     private normalizeType(type: string): NonNullable<Task['type']> {

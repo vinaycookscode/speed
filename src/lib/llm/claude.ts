@@ -63,7 +63,7 @@ export class ClaudeClient implements ILLMClient {
         this.client = new Anthropic({
             apiKey: config.apiKey,
             dangerouslyAllowBrowser: true,
-            timeout: 90000, // 90s per individual HTTP request — prevents silent hangs
+            timeout: 600000, // 10 min — non-streaming large plans can take 3-5 min in Chrome
         });
     }
 
@@ -157,6 +157,12 @@ export class ClaudeClient implements ILLMClient {
         forceTool?: string
     ): Promise<ToolCallResponse> {
         const options = { ...this.defaultOptions, ...request.options };
+        const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+
+        // Enable extended output for large requests (plans can be 30K+ tokens)
+        const requestOptions = maxTokens > 8192
+            ? { headers: { 'anthropic-beta': 'output-128k-2025-02-19' } }
+            : undefined;
 
         try {
             const response = await this.withRetry(() =>
@@ -165,12 +171,12 @@ export class ClaudeClient implements ILLMClient {
                     system: request.systemPrompt,
                     messages: this.buildMessages(request),
                     temperature: options.temperature ?? DEFAULT_TEMPERATURE,
-                    max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+                    max_tokens: maxTokens,
                     tools: this.convertTools(tools),
                     tool_choice: forceTool
                         ? { type: 'tool', name: forceTool }
                         : { type: 'auto' },
-                })
+                }, requestOptions)
             );
 
             return this.parseToolCallResponse(response);
@@ -316,7 +322,9 @@ export class ClaudeClient implements ILLMClient {
                 completionTokens: response.usage.output_tokens,
                 totalTokens: response.usage.input_tokens + response.usage.output_tokens,
             },
-            finishReason: toolCalls.length > 0 ? 'tool_calls' : this.mapStopReason(response.stop_reason),
+            finishReason: response.stop_reason === 'max_tokens' ? 'length'
+                : toolCalls.length > 0 ? 'tool_calls'
+                : this.mapStopReason(response.stop_reason),
         };
     }
 
@@ -349,11 +357,20 @@ export class ClaudeClient implements ILLMClient {
     }
 
     private isNonRetryableError(error: unknown): boolean {
+        if (error instanceof LLMError) {
+            // Never retry auth failures or timeouts — retrying burns time with no benefit
+            return (
+                error.code === LLMErrorCode.INVALID_API_KEY ||
+                error.code === LLMErrorCode.TIMEOUT
+            );
+        }
         if (error instanceof Error) {
             return (
                 error.message.includes('API key') ||
                 error.message.includes('authentication') ||
-                error.message.includes('401')
+                error.message.includes('401') ||
+                error.message.includes('timeout') ||
+                error.message.includes('ETIMEDOUT')
             );
         }
         return false;
